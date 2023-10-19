@@ -14,7 +14,8 @@ end
 
 def fn bind-arrow (M: VType -> CType) (B: CType) (alg: U (Alg M B)) (A: VType) : Alg M (A -> B) =
   comatch
-  | .bindAlg() -> fn A' m f -> ! alg .bindAlg() @(A') m { fn a' -> ! f a' }
+  | .bindAlg() -> fn A' m f a ->
+    ! alg .bindAlg() @(A') m { fn a' -> ! f a' a }
   end
 end
 
