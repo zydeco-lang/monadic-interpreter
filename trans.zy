@@ -1,0 +1,45 @@
+codata Monad (M: VType -> CType) where
+  | .return(): forall (A: VType) . A -> M A
+  | .bind(): forall (A: VType) (A': VType) . U (M A) -> U (A -> M A') -> M A'
+end
+
+codata MonadTrans (T: (VType -> CType) -> VType -> CType) where
+  | .lift(): forall (M: VType -> CType) (A: VType) . U (Monad M) -> U (M A) -> T M A
+end
+
+codata OptionT (M: VType -> CType) (A: VType) where
+  | .run(): M (Option A)
+end
+
+def fn option-t-monad (M: VType -> CType) (mo: U (Monad M)) : Monad (OptionT M) =
+  comatch
+  | .return() -> fn A a -> // 
+    comatch
+    | .run() -> ! mo .return() @(Option A) Some(a)
+    end
+  | .bind() -> fn A A' m f ->
+    comatch
+    | .run() -> ! mo .bind() @(Option A) @(Option A') m { fn a? ->
+      match a?
+      | Some() -> ! f ?a
+      | None() -> ! mo .return() @(Option A') None()
+      end
+    }
+    end
+  end
+end
+
+def fn option-trans : MonadTrans OptionT =
+  comatch
+  | .lift() -> fn M A mo m ->
+    comatch
+    | .run() -> ! mo .bind() @(A) @(Option A) m { fn a ->
+      ! mo .return() @(Option A) Some(a)
+    }
+    end
+  end
+end
+
+main
+  ! exit 0
+end
