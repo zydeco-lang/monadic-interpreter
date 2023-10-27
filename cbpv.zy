@@ -1,9 +1,9 @@
-// A monad structure that supports fail as well
-codata MonadErr (M: VType -> CType) where
+// A monad structure that supports fail and print as well
+codata MonadErrPrint (M: VType -> CType) where
   | .return(): forall (A: VType) . A -> M A
   | .bind(): forall (A: VType) (A': VType) . U (M A) -> U (A -> M A') -> M A'
   | .fail(): forall (A: VType) . Exception -> M A
-  // | .print(): String -> M Unit
+  | .print(): String -> M Unit
 end
 
 codata Algebra (M: VType -> CType) (B: CType) where
@@ -16,30 +16,30 @@ data Exception where
 end
 
 // Continuation-based error monad
-codata MExn (A: VType) where
-  | .run(): forall (R: CType) . U (A -> R) -> U (Exception -> R) -> R
+codata MExnOS (A: VType) where
+  | .run(): U (A -> OS) -> U (Exception -> OS) -> OS
 end
 
-def fn mexn : MonadErr MExn =
+def fn mexn : MonadErrPrint MExnOS =
   comatch
   | .return() -> fn A a ->
     comatch
-    | .run() -> fn R ka _ -> ! ka a
+    | .run() -> fn ka _ -> ! ka a
     end
   | .bind() -> fn A A' m f ->
     comatch
-    | .run() -> fn R ka ke ->
-      ! m .run() @(R) { fn a -> ! f a .run() @(R) ka ke } { fn e -> ! ke e }
+    | .run() -> fn ka ke ->
+      ! m .run() { fn a -> ! f a .run() ka ke } { fn e -> ! ke e }
     end
   | .fail() -> fn A e ->
     comatch
-    | .run() -> fn R _ ke -> ! ke e
+    | .run() -> fn _ ke -> ! ke e
     end
-  // | .print() -> fn s ->
-  //   comatch
-  //   | .run() -> fn R ka _ ->
-  //     ! write_line s { ! ka Unit() }
-  //   end
+  | .print() -> fn s ->
+    comatch
+    | .run() -> fn ka _ ->
+      ! write_line s { ! ka Unit() }
+    end
   end
 end
 
@@ -77,7 +77,7 @@ end
 
 codata Compu where
   | .app(): Value -> Compu
-  | .bind(): MExn Value
+  | .bind(): MExnOS Value
 end
 
 def fn abort (e: Exception) : Compu =
@@ -87,13 +87,13 @@ def fn abort (e: Exception) : Compu =
   end
 end
 
-def rec fn malg : Algebra MExn Compu =
+def rec fn malg : Algebra MExnOS Compu =
   comatch
-  | .bindA() -> fn A m f -> // m : U (MExn A), f: U (A -> Compu)
+  | .bindA() -> fn A m f -> // m : U (MExnOS A), f: U (A -> Compu)
     comatch
     | .app() -> fn a -> // goal: Compu
       ! malg .bindA() @(A) m { fn v -> ! f v .app() a }
-    | .bind() -> // goal: MExn Value, use ordinary bind
+    | .bind() -> // goal: MExnOS Value, use ordinary bind
       ! mexn .bind() @(A) @(Value) m { fn x -> ! f x .bind() }
     end
   end
@@ -115,7 +115,7 @@ data SCompu where
 end
 
 codata Interp where
-  | .value(): SValue -> MExn Value
+  | .value(): SValue -> MExnOS Value
   | .compu(): SCompu -> Compu
 end
 
@@ -147,7 +147,7 @@ def rec fn interp (env: U EnvO) : Interp =
       let mv = { ! interp env .value() sv } in
       ! malg .bindA() @(Value) mv { fn v -> ! interp env .compu() sc .app() v }
     | Ret(sv) ->
-      let rec fn unwind (m: U (MExn Value)) : Compu =
+      let rec fn unwind (m: U (MExnOS Value)) : Compu =
         comatch
         | .app() -> fn _ -> ! unwind { ! mexn .fail() @(Value) TypeError() }
         | .bind() -> ! m
@@ -209,7 +209,7 @@ main
     end
   in
   let fn demo (term: SCompu) (ans: Value) (k: U OS): OS =
-    ! interp env .compu() term .bind() .run() @(OS) {
+    ! interp env .compu() term .bind() .run() {
       fn v -> ! value-eq v ans k
     } report
   in
