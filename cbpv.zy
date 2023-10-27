@@ -1,4 +1,5 @@
-codata Monad (M: VType -> CType) where
+// A monad structure that supports fail as well
+codata MonadErr (M: VType -> CType) where
   | .return(): forall (A: VType) . A -> M A
   | .bind(): forall (A: VType) (A': VType) . U (M A) -> U (A -> M A') -> M A'
   | .fail(): forall (A: VType) . Exception -> M A
@@ -14,11 +15,12 @@ data Exception where
   | FreeVariable()
 end
 
+// Continuation-based error monad
 codata MExn (A: VType) where
   | .run(): forall (R: CType) . U (A -> R) -> U (Exception -> R) -> R
 end
 
-def fn mexn : Monad MExn =
+def fn mexn : MonadErr MExn =
   comatch
   | .return() -> fn A a ->
     comatch
@@ -87,11 +89,11 @@ end
 
 def rec fn malg : Algebra MExn Compu =
   comatch
-  | .bindA() -> fn A m f ->
+  | .bindA() -> fn A m f -> // m : U (MExn A), f: U (A -> Compu)
     comatch
-    | .app() -> fn a ->
+    | .app() -> fn a -> // goal: Compu
       ! malg .bindA() @(A) m { fn v -> ! f v .app() a }
-    | .bind() ->
+    | .bind() -> // goal: MExn Value, use ordinary bind
       ! mexn .bind() @(A) @(Value) m { fn x -> ! f x .bind() }
     end
   end
@@ -211,9 +213,13 @@ main
       fn v -> ! value-eq v ans k
     } report
   in
+  // if true then ret true else ret false
   let term1: SCompu = If(Bool(True()), Ret(Bool(True())), Ret(Bool(False()))) in
   let ans1: Value = Bool(True()) in
-  let term2: SCompu = App(Lam("x", Ret(Var("x"))), Bool(True())) in
+  // (do x <- ret True in \b -> if b then x else false) True
+  let term2: SCompu = App(Bind(
+    Ret(Bool(True())), "x", Lam("b", If(Var("b"), Ret(Var("x")), Ret(Bool(False()))))
+  ), Bool(True())) in
   let ans2: Value = Bool(True()) in
   ! demo term1 ans1 {
   ! demo term2 ans2 {
