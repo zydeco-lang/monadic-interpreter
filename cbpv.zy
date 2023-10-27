@@ -5,8 +5,8 @@ codata Monad (M: VType -> CType) where
   // | .print(): String -> M Unit
 end
 
-codata Algebra (M: VType -> CType) (N: VType -> CType) where
-  | .bindA(): forall (A: VType) . U (M A) -> U (A -> N A) -> N A
+codata Algebra (M: VType -> CType) (B: CType) where
+  | .bindA(): forall (A: VType) . U (M A) -> U (A -> B) -> B
 end
 
 data Exception where
@@ -70,25 +70,30 @@ end
 
 data Value where
   | Bool(Bool)
-  | Thunk(U (Compu Value))
+  | Thunk(U (Compu))
 end
 
-codata Compu (A: VType) where
-  | .app(): A -> Compu A
-  | .bind(): MExn A
+codata Compu where
+  | .app(): Value -> Compu
+  | .bind(): MExn Value
 end
 
-def fn abort (A: VType) (e: Exception) : Compu A =
+def fn abort (e: Exception) : Compu =
   rec unwind -> comatch
   | .app() -> fn _ -> ! unwind
-  | .bind() -> ! mexn .fail() @(A) e
+  | .bind() -> ! mexn .fail() @(Value) e
   end
 end
 
 def rec fn malg : Algebra MExn Compu =
   comatch
   | .bindA() -> fn A m f ->
-    ! m .run() @(Compu A) f { ! abort @(A) }
+    comatch
+    | .app() -> fn a ->
+      ! malg .bindA() @(A) m { fn v -> ! f v .app() a }
+    | .bind() ->
+      ! mexn .bind() @(A) @(Value) m { fn x -> ! f x .bind() }
+    end
   end
 end
 
@@ -109,7 +114,7 @@ end
 
 codata Interp where
   | .value(): SValue -> MExn Value
-  | .compu(): SCompu -> Compu Value
+  | .compu(): SCompu -> Compu
 end
 
 def rec fn interp (env: U EnvO) : Interp =
@@ -140,7 +145,7 @@ def rec fn interp (env: U EnvO) : Interp =
       let mv = { ! interp env .value() sv } in
       ! malg .bindA() @(Value) mv { fn v -> ! interp env .compu() sc .app() v }
     | Ret(sv) ->
-      let rec fn unwind (m: U (MExn Value)) : Compu Value =
+      let rec fn unwind (m: U (MExn Value)) : Compu =
         comatch
         | .app() -> fn _ -> ! unwind { ! mexn .fail() @(Value) TypeError() }
         | .bind() -> ! m
@@ -156,7 +161,7 @@ def rec fn interp (env: U EnvO) : Interp =
       let mv = { ! interp env .value() sv } in
       ! malg .bindA() @(Value) mv { fn v ->
         match v
-        | Bool(_) -> ! abort @(Value) TypeError()
+        | Bool(_) -> ! abort TypeError()
         | Thunk(c) -> ! c
         end
       }
@@ -169,7 +174,7 @@ def rec fn interp (env: U EnvO) : Interp =
           | True() -> ! interp env .compu() c1
           | False() -> ! interp env .compu() c2
           end
-        | Thunk(_) -> ! abort @(Value) TypeError()
+        | Thunk(_) -> ! abort TypeError()
         end
       }
     end
