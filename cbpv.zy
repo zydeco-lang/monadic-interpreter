@@ -6,8 +6,10 @@ codata MonadErrPrint (M: VType -> CType) where
   | .print(): String -> M Unit
 end
 
-codata Algebra (M: VType -> CType) (B: CType) where
+// An algebra structure that supports fail
+codata AlgebraErr (M: VType -> CType) (B: CType) where
   | .bindA(): forall (A: VType) . U (M A) -> U (A -> B) -> B
+  | .failA(): Exception -> B
 end
 
 data Exception where
@@ -80,14 +82,7 @@ codata Compu where
   | .bind(): MExnOS Value
 end
 
-def fn abort (e: Exception) : Compu =
-  rec unwind -> comatch
-  | .app() -> fn _ -> ! unwind
-  | .bind() -> ! mexn .fail() @(Value) e
-  end
-end
-
-def rec fn malg : Algebra MExnOS Compu =
+def rec fn malg : AlgebraErr MExnOS Compu =
   comatch
   | .bindA() -> fn A m f -> // m : U (MExnOS A), f: U (A -> Compu)
     comatch
@@ -95,6 +90,11 @@ def rec fn malg : Algebra MExnOS Compu =
       ! malg .bindA() @(A) m { fn v -> ! f v .app() a }
     | .bind() -> // goal: MExnOS Value, use ordinary bind
       ! mexn .bind() @(A) @(Value) m { fn x -> ! f x .bind() }
+    end
+  | .failA() -> fn e ->
+    rec unwind -> comatch
+    | .app() -> fn _ -> ! unwind
+    | .bind() -> ! mexn .fail() @(Value) e
     end
   end
 end
@@ -147,13 +147,10 @@ def rec fn interp (env: U EnvO) : Interp =
       let mv = { ! interp env .value() sv } in
       ! malg .bindA() @(Value) mv { fn v -> ! interp env .compu() sc .app() v }
     | Ret(sv) ->
-      let rec fn unwind (m: U (MExnOS Value)) : Compu =
-        comatch
-        | .app() -> fn _ -> ! unwind { ! mexn .fail() @(Value) TypeError() }
-        | .bind() -> ! m
-        end
-      in
-      ! unwind { ! interp env .value() sv }
+      comatch
+      | .app() -> fn _ -> ! malg .failA() TypeError()
+      | .bind() -> ! interp env .value() sv
+      end
     | Bind(sc1, x, sc2) ->
       let mv = { ! interp env .compu() sc1 .bind() } in
       ! malg .bindA() @(Value) mv { fn v ->
@@ -163,7 +160,7 @@ def rec fn interp (env: U EnvO) : Interp =
       let mv = { ! interp env .value() sv } in
       ! malg .bindA() @(Value) mv { fn v ->
         match v
-        | Bool(_) -> ! abort TypeError()
+        | Bool(_) -> ! malg .failA() TypeError()
         | Thunk(c) -> ! c
         end
       }
@@ -176,7 +173,7 @@ def rec fn interp (env: U EnvO) : Interp =
           | True() -> ! interp env .compu() c1
           | False() -> ! interp env .compu() c2
           end
-        | Thunk(_) -> ! abort TypeError()
+        | Thunk(_) -> ! malg .failA() TypeError()
         end
       }
     end
