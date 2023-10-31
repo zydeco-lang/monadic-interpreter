@@ -1,14 +1,26 @@
-// A monad structure that supports fail and print as well
-codata MonadErrPrint (M: VType -> CType) where
+// A monad structure
+codata Monad (M: VType -> CType) where
   | .return(): forall (A: VType) . A -> M A
   | .bind(): forall (A: VType) (A': VType) . U (M A) -> U (A -> M A') -> M A'
+end
+
+// A monad structure that supports fail
+codata MonadErr (M: VType -> CType) where
   | .fail(): forall (A: VType) . Exception -> M A
+end
+
+// A monad structure that supports print
+codata MonadPrint (M: VType -> CType) where
   | .print(): String -> M Unit
 end
 
 // An algebra structure that supports fail
-codata AlgebraErr (M: VType -> CType) (B: CType) where
+codata Algebra (M: VType -> CType) (B: CType) where
   | .bindA(): forall (A: VType) . U (M A) -> U (A -> B) -> B
+end
+
+// An algebra structure that supports fail
+codata AlgebraErr (M: VType -> CType) (B: CType) where
   | .failA(): Exception -> B
 end
 
@@ -22,7 +34,7 @@ codata MExnOS (A: VType) where
   | .run(): U (A -> OS) -> U (Exception -> OS) -> OS
 end
 
-def fn mexn : MonadErrPrint MExnOS =
+def fn mexn : Monad MExnOS =
   comatch
   | .return() -> fn A a ->
     comatch
@@ -33,10 +45,20 @@ def fn mexn : MonadErrPrint MExnOS =
     | .run() -> fn ka ke ->
       ! m .run() { fn a -> ! f a .run() ka ke } { fn e -> ! ke e }
     end
+  end
+end
+
+def fn mexn-err : MonadErr MExnOS =
+  comatch
   | .fail() -> fn A e ->
     comatch
     | .run() -> fn _ ke -> ! ke e
     end
+  end
+end
+
+def fn mexn-print : MonadPrint MExnOS =
+  comatch
   | .print() -> fn s ->
     comatch
     | .run() -> fn ka _ ->
@@ -82,7 +104,7 @@ codata Compu where
   | .bind(): MExnOS Value
 end
 
-def rec fn malg : AlgebraErr MExnOS Compu =
+def rec fn malg : Algebra MExnOS Compu =
   comatch
   | .bindA() -> fn A m f -> // m : U (MExnOS A), f: U (A -> Compu)
     comatch
@@ -91,10 +113,15 @@ def rec fn malg : AlgebraErr MExnOS Compu =
     | .bind() -> // goal: MExnOS Value, use ordinary bind
       ! mexn .bind() @(A) @(Value) m { fn x -> ! f x .bind() }
     end
+  end
+end
+
+def rec fn malg-err : AlgebraErr MExnOS Compu =
+  comatch
   | .failA() -> fn e ->
     rec unwind -> comatch
     | .app() -> fn _ -> ! unwind
-    | .bind() -> ! mexn .fail() @(Value) e
+    | .bind() -> ! mexn-err .fail() @(Value) e
     end
   end
 end
@@ -126,7 +153,7 @@ def rec fn interp (env: U EnvO) : Interp =
     | Var(x) ->
       do x? <- ! env .lookup() x;
       match x?
-      | None() -> ! mexn .fail() @(Value) FreeVariable()
+      | None() -> ! mexn-err .fail() @(Value) FreeVariable()
       | Some(v) ->
         ! mexn .return() @(Value) v
       end
@@ -141,14 +168,14 @@ def rec fn interp (env: U EnvO) : Interp =
       comatch
       | .app() -> fn v ->
         ! interp { ! env .extend() x v } .compu() sc
-      | .bind() -> ! mexn .fail() @(Value) TypeError()
+      | .bind() -> ! mexn-err .fail() @(Value) TypeError()
       end
     | App(sc, sv) ->
       let mv = { ! interp env .value() sv } in
       ! malg .bindA() @(Value) mv { fn v -> ! interp env .compu() sc .app() v }
     | Ret(sv) ->
       comatch
-      | .app() -> fn _ -> ! malg .failA() TypeError()
+      | .app() -> fn _ -> ! malg-err .failA() TypeError()
       | .bind() -> ! interp env .value() sv
       end
     | Bind(sc1, x, sc2) ->
@@ -160,7 +187,7 @@ def rec fn interp (env: U EnvO) : Interp =
       let mv = { ! interp env .value() sv } in
       ! malg .bindA() @(Value) mv { fn v ->
         match v
-        | Bool(_) -> ! malg .failA() TypeError()
+        | Bool(_) -> ! malg-err .failA() TypeError()
         | Thunk(c) -> ! c
         end
       }
@@ -173,7 +200,7 @@ def rec fn interp (env: U EnvO) : Interp =
           | True() -> ! interp env .compu() c1
           | False() -> ! interp env .compu() c2
           end
-        | Thunk(_) -> ! malg .failA() TypeError()
+        | Thunk(_) -> ! malg-err .failA() TypeError()
         end
       }
     end
