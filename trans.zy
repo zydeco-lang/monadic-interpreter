@@ -7,6 +7,39 @@ codata MonadTrans (T: (VType -> CType) -> VType -> CType) where
   | .lift(): forall (M: VType -> CType) (A: VType) . U (Monad M) -> U (M A) -> T M A
 end
 
+codata ReaderT (R: VType) (M: VType -> CType) (A: VType) where
+  | .run(): R -> M A
+end
+
+def fn reader_t_monad (R: VType) (M: VType -> CType) (mo: U (Monad M)) : Monad (ReaderT R M) =
+  comatch
+  | .return() -> fn A a ->
+    // goal: ReaderT R M A
+    comatch
+    | .run() -> fn _ -> ! mo .return() @(A) a
+    end
+  | .bind() -> fn A A' m f -> // m: U (ReaderT R M A), f: U (A -> ReaderT R M A')
+    // goal: ReaderT R M A'
+    comatch
+    | .run() -> fn r ->
+      ! mo .bind() @(A) @(A') { ! m .run() r } { fn a ->
+        ! f a .run() r
+      }
+    end
+  end
+end
+
+def fn reader_t_trans (R: VType) : MonadTrans (ReaderT R) =
+  comatch
+  | .lift() -> fn M A (mo: U (Monad M)) (m: U (M A)) ->
+    // goal: ReaderT R M A
+    comatch
+    | .run() -> fn _ -> ! m
+    // basically ignoring the reader input
+    end
+  end
+end
+
 codata OptionT (M: VType -> CType) (A: VType) where
   | .run(): M (Option A)
 end
@@ -21,9 +54,9 @@ def fn option_t_monad (M: VType -> CType) (mo: U (Monad M)) : Monad (OptionT M) 
   | .bind() -> fn A A' m f -> // m: U (OptionT M A), f: U (A -> OptionT M A')
     // goal: OptionT M A'
     comatch
-    | .run() -> ! mo .bind() @(Option A) @(Option A') m { fn a? ->
+    | .run() -> ! mo .bind() @(Option A) @(Option A') { ! m .run() } { fn a? ->
       match a?
-      | Some(a) -> ! f a
+      | Some(a) -> ! f a .run()
       | None() -> ! mo .return() @(Option A') None()
       end
     }
@@ -31,7 +64,7 @@ def fn option_t_monad (M: VType -> CType) (mo: U (Monad M)) : Monad (OptionT M) 
   end
 end
 
-def fn option_trans : MonadTrans OptionT =
+def fn option_t_trans : MonadTrans OptionT =
   comatch
   | .lift() -> fn M A mo m ->
     comatch
@@ -41,18 +74,6 @@ def fn option_trans : MonadTrans OptionT =
     end
   end
 end
-
-codata MonadOS (O: CType) where
-  | .read(): U (String -> O) -> O
-  | .write(): String -> U O -> O
-end
-
-codata Option~ (B: CType) where
-  | .some(): B
-  | .none(): U B -> B
-end
-
-def fn moptos : MonadOS (Option~ OS)
 
 main
   ! exit 0
