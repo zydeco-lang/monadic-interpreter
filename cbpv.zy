@@ -67,11 +67,11 @@ def fn mexn-print : MonadPrint MExnOS =
   end
 end
 
-module ToStr where
-  def fn value-str (v: Value) : Ret String =
+module Print where
+  def fn print-value (v: Value) (kont: U OS) : OS =
     match v
-    | Bool(b) -> ! if @(Ret String) b { ret "true" } { ret "false" }
-    | Thunk(_) -> ret "<thunk>"
+    | Bool(b) -> ! if @(OS) b { ! write_str "true" kont } { ! write_str "false" kont }
+    | Thunk(c) -> ! write_str "<thunk>" kont
     end
   end
 end
@@ -109,8 +109,7 @@ def rec fn envo (env: EnvT) : EnvO =
         ! write_str "  " {
         ! write_str x {
         ! write_str " = " {
-        do s <- ! value-str v;
-        ! write_str s {
+        ! print-value v {
         ! write_line "," {
           ! p env'
         } } } } }
@@ -121,7 +120,7 @@ end
 
 data Value where
   | Bool(Bool)
-  | Thunk(U (Compu))
+  | Thunk(U Compu)
 end
 
 codata Compu where
