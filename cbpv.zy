@@ -67,6 +67,15 @@ def fn mexn-print : MonadPrint MExnOS =
   end
 end
 
+module ToStr where
+  def fn value-str (v: Value) : Ret String =
+    match v
+    | Bool(b) -> ! if @(Ret String) b { ret "true" } { ret "false" }
+    | Thunk(_) -> ret "<thunk>"
+    end
+  end
+end
+
 data EnvT where
   | Empty()
   | Extend(String, Value, EnvT)
@@ -75,6 +84,7 @@ end
 codata EnvO where
   | .lookup(): String -> Ret (Option Value)
   | .extend(): String -> Value -> EnvO
+  | .print(): U OS -> OS
 end
 
 def rec fn envo (env: EnvT) : EnvO =
@@ -91,6 +101,21 @@ def rec fn envo (env: EnvT) : EnvO =
     end
   | .extend() -> fn x v ->
     ! envo Extend(x, v, env)
+  | .print() -> fn k ->
+    ! write_line "[" {
+      (rec (p : Thunk (EnvT -> OS)) -> fn env -> match env
+      | Empty() -> ! write_line "]" k
+      | Extend(x, v, env') ->
+        ! write_str "  " {
+        ! write_str x {
+        ! write_str " = " {
+        do s <- ! value-str v;
+        ! write_str s {
+        ! write_line "," {
+          ! p env'
+        } } } } }
+      end) env
+    }
   end
 end
 
@@ -139,6 +164,7 @@ data SCompu where
   | Bind(SCompu, String, SCompu)
   | Force(SValue)
   | If(SValue, SCompu, SCompu)
+  | Env(SCompu)
 end
 
 codata Interp where
@@ -203,6 +229,21 @@ def rec fn interp (env: U EnvO) : Interp =
         | Thunk(_) -> ! malg-err .failA() TypeError()
         end
       }
+    | Env(sc) ->
+      let mp: U (MExnOS Unit) = {
+        comatch
+        | .run() -> fn ka _ ->
+          ! write_line "[[DEBUG]]" {
+          ! write_str "[env]: " {
+          ! env .print() {
+          ! read_line { fn _ ->
+          ! ka Unit()
+          } } } }
+        end
+      } in
+      ! malg .bindA() @(Unit) mp { fn _ ->
+        ! interp env .compu() sc
+      }
     end
   end
 end
@@ -242,7 +283,7 @@ main
   let ans1: Value = Bool(True()) in
   // (do x <- ret True in \b -> if b then x else false) True
   let term2: SCompu = App(Bind(
-    Ret(Bool(True())), "x", Lam("b", If(Var("b"), Ret(Var("x")), Ret(Bool(False()))))
+    Ret(Bool(True())), "x", Env(Lam("b", If(Var("b"), Ret(Var("x")), Ret(Bool(False())))))
   ), Bool(True())) in
   let ans2: Value = Bool(True()) in
   ! demo term1 ans1 {
