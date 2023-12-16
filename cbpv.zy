@@ -74,6 +74,25 @@ module Print where
     | Thunk(c) -> ! write_str "<thunk>" kont
     end
   end
+  def fn print-trace (trace: Trace) (kont: U OS) : OS =
+    let kont = { ! write_line "]" kont } in
+    do kont <- ! foldl @(TraceItem) @(U OS) trace { fn t kont ->
+      match t
+      | App(sc) -> ret {
+        ! write_str "  app" {
+        ! write_line "," {
+        ! kont
+      } } }
+      | Bind(x, sc) -> ret {
+        ! write_str "  bind " {
+        ! write_str x {
+        ! write_line "," kont
+      } } }
+      end
+    } kont;
+    let kont = { ! write_line "[" kont } in
+    ! kont
+  end
 end
 
 data EnvT where
@@ -166,12 +185,19 @@ data SCompu where
   | Env(SCompu)
 end
 
+data TraceItem where
+  | App(SCompu)
+  | Bind(String, SCompu)
+end
+
+alias Trace = List TraceItem end
+
 codata Interp where
   | .value(): SValue -> MExnOS Value
   | .compu(): SCompu -> Compu
 end
 
-def rec fn interp (env: U EnvO) : Interp =
+def rec fn interp (env: U EnvO) (trace: Trace) : Interp =
   comatch
   | .value() -> fn sv ->
     match sv
@@ -185,31 +211,33 @@ def rec fn interp (env: U EnvO) : Interp =
     | Bool(b) ->
       ! mexn .return() @(Value) Bool(b)
     | Thunk(c) ->
-      ! mexn .return() @(Value) Thunk({ ! interp env .compu() c })
+      ! mexn .return() @(Value) Thunk({ ! interp env trace .compu() c })
     end
   | .compu() -> fn sc ->
     match sc
     | Lam(x, sc) ->
       comatch
       | .app() -> fn v ->
-        ! interp { ! env .extend() x v } .compu() sc
+        ! interp { ! env .extend() x v } trace .compu() sc
       | .bind() -> ! mexn-err .fail() @(Value) TypeError()
       end
     | App(sc, sv) ->
-      let mv = { ! interp env .value() sv } in
-      ! malg .bindA() @(Value) mv { fn v -> ! interp env .compu() sc .app() v }
+      let trace': Trace = Cons(App(sc), trace) in
+      let mv = { ! interp env trace' .value() sv } in
+      ! malg .bindA() @(Value) mv { fn v -> ! interp env trace .compu() sc .app() v }
     | Ret(sv) ->
       comatch
       | .app() -> fn _ -> ! malg-err .failA() TypeError()
-      | .bind() -> ! interp env .value() sv
+      | .bind() -> ! interp env trace .value() sv
       end
     | Bind(sc1, x, sc2) ->
-      let mv = { ! interp env .compu() sc1 .bind() } in
+      let trace': Trace = Cons(Bind(x, sc2), trace) in
+      let mv = { ! interp env trace' .compu() sc1 .bind() } in
       ! malg .bindA() @(Value) mv { fn v ->
-        ! interp { ! env .extend() x v } .compu() sc2
+        ! interp { ! env .extend() x v } trace .compu() sc2
       }
     | Force(sv) ->
-      let mv = { ! interp env .value() sv } in
+      let mv = { ! interp env trace .value() sv } in
       ! malg .bindA() @(Value) mv { fn v ->
         match v
         | Bool(_) -> ! malg-err .failA() TypeError()
@@ -217,13 +245,13 @@ def rec fn interp (env: U EnvO) : Interp =
         end
       }
     | If(sv, c1, c2) ->
-      let mv = { ! interp env .value() sv } in
+      let mv = { ! interp env trace .value() sv } in
       ! malg .bindA() @(Value) mv { fn v ->
         match v
         | Bool(b) ->
           match b
-          | True() -> ! interp env .compu() c1
-          | False() -> ! interp env .compu() c2
+          | True() -> ! interp env trace .compu() c1
+          | False() -> ! interp env trace .compu() c2
           end
         | Thunk(_) -> ! malg-err .failA() TypeError()
         end
@@ -235,13 +263,16 @@ def rec fn interp (env: U EnvO) : Interp =
           ! write_line "[[DEBUG]]" {
           ! write_str "[env]: " {
           ! env .print() {
+          ! write_str "[trace]: " {
+          ! print-trace trace {
+          ! write_line "" {
           ! read_line { fn _ ->
           ! ka Unit()
-          } } } }
+          } } } } } } }
         end
       } in
       ! malg .bindA() @(Unit) mp { fn _ ->
-        ! interp env .compu() sc
+        ! interp env trace .compu() sc
       }
     end
   end
@@ -273,7 +304,7 @@ main
     end
   in
   let fn demo (term: SCompu) (ans: Value) (k: U OS): OS =
-    ! interp env .compu() term .bind() .run() {
+    ! interp env Nil() .compu() term .bind() .run() {
       fn v -> ! value-eq v ans k
     } report
   in
@@ -282,7 +313,7 @@ main
   let ans1: Value = Bool(True()) in
   // (do x <- ret True in \b -> if b then x else false) True
   let term2: SCompu = App(Bind(
-    Ret(Bool(True())), "x", Env(Lam("b", If(Var("b"), Ret(Var("x")), Ret(Bool(False())))))
+    Env(Ret(Bool(True()))), "x", Env(Lam("b", If(Var("b"), Ret(Var("x")), Ret(Bool(False())))))
   ), Bool(True())) in
   let ans2: Value = Bool(True()) in
   ! demo term1 ans1 {
