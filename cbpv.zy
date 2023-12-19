@@ -14,6 +14,14 @@ codata MonadPrint (M: VType -> CType) where
   | .print(): String -> M Unit
 end
 
+codata MonadReduce (M: VType -> CType) where
+  | .reduce(): forall (A: VType) . List (U (M A)) -> U (M A) -> M A
+end
+
+codata MonadTrans (T: (VType -> CType) -> VType -> CType) where
+  | .lift(): forall (M: VType -> CType) (A: VType) . U (Monad M) -> U (M A) -> T M A
+end
+
 // An algebra structure that supports fail
 codata Algebra (M: VType -> CType) (B: CType) where
   | .bindA(): forall (A: VType) . U (M A) -> U (A -> B) -> B
@@ -25,8 +33,9 @@ codata AlgebraErr (M: VType -> CType) (B: CType) where
 end
 
 data Exception where
-  | TypeError()
+  | ParseError(Int, String)
   | FreeVariable()
+  | TypeError()
 end
 
 // Continuation-based error monad
@@ -63,6 +72,45 @@ def fn mexn-print : MonadPrint MExnOS =
     comatch
     | .run() -> fn ka _ ->
       ! write_line s { ! ka Unit() }
+    end
+  end
+end
+
+def fn mexn-reduce : MonadReduce MExnOS =
+  comatch
+  | .reduce() -> fn A ms m ->
+    do m~ <- ! foldl @(U (MExnOS A)) @(U (MExnOS A)) ms {
+      fn m' m -> ret {
+        comatch
+        | .run() -> fn ka ke ->
+          ! m' .run() ka { fn _ -> ! m .run() ka ke }
+        end
+      }
+    } m;
+    ! m~
+  end
+end
+
+codata StateT (S: VType) (M: VType -> CType) (A: VType) where
+  | .run(): S -> M (Pair S A)
+end
+
+def fn state_t_monad (S: VType) (M: VType -> CType) (mo: U (Monad M)) : Monad (StateT S M) =
+  comatch
+  | .return() -> fn A a ->
+    // goal: StateT S M A
+    comatch
+    | .run() -> fn s -> ! mo .return() @(Pair S A) Cons(s, a)
+    end
+  | .bind() -> fn A A' m f -> // m: U (StateT S M A), f: U (A -> StateT S M A')
+    // goal: StateT S M A'
+    comatch
+    | .run() -> fn s ->
+      ! mo .bind() @(Pair S A) @(Pair S A') { ! m .run() s } { fn sa ->
+        match sa
+        | Cons(s, a) -> ! f a .run() s
+        end
+      }
     end
   end
 end
@@ -185,6 +233,73 @@ data SCompu where
   | Env(SCompu)
 end
 
+/* Parser */
+
+codata ParserInner where
+  | .char(): Char -> MExnOS Char
+  | .lpar(): MExnOS Unit
+  | .rpar(): MExnOS Unit
+  | .word(): String -> MExnOS String
+  | .value(): MExnOS SValue
+  | .compu_inner(): MExnOS SCompu
+  | .compu(): MExnOS SCompu
+end
+
+alias Parser = String -> Int -> ParserInner end
+
+pub def rec fn parse: Parser = fn s i ->
+  comatch
+  | .char() -> fn c ->
+    ! if~ @(MExnOS Char) {
+      do c' <- ! str_index s i;
+      ! char_eq c' c
+    } {
+      ! mexn .return() @(Char) c
+    } {
+      do msg <- ! char_to_str c;
+      do msg <- ! str_append "missing `" msg;
+      do msg <- ! str_append msg "`";
+      ! mexn-err .fail() @(Char) ParseError(i, msg)
+    }
+  | .lpar() ->
+    ! mexn .bind() @(Char) @(Unit)
+    { ! parse s i .char() '(' }
+    { fn _ -> ! mexn .return() @(Unit) Unit() }
+  | .rpar() ->
+    ! mexn .bind() @(Char) @(Unit)
+    { ! parse s i .char() ')' }
+    { fn _ -> ! mexn .return() @(Unit) Unit() }
+  | .word() -> fn w -> ! mexn .return() @(String) w
+  | .value() ->
+    ! mexn-reduce .reduce() @(SValue)
+    Nil()
+    { ! mexn-err .fail() @(SValue) ParseError(i, "computation parse error") }
+  | .compu_inner() ->
+    ! mexn-reduce .reduce() @(SCompu)
+    Nil()
+    { ! mexn-err .fail() @(SCompu) ParseError(i, "computation parse error") }
+  | .compu() ->
+    ! mexn .bind() @(Unit) @(SCompu) {
+      ! parse s i .lpar()
+    } { fn _ ->
+      ! mexn .bind() @(SCompu) @(SCompu) {
+        do i <- ! add i 1;
+        ! parse s i .compu_inner()
+      } { fn sc ->
+        ! mexn .bind() @(Unit) @(SCompu) { ! parse s i .rpar() } {
+          fn _ -> ! mexn .return() @(SCompu) sc
+        }
+      }
+    }
+  end
+end
+
+pub def fn parse_main (s: String) : MExnOS SCompu =
+  ! parse s 0 .compu()
+end
+
+/* Interpretor */
+
 data TraceItem where
   | App(SCompu)
   | Bind(String, SCompu)
@@ -282,8 +397,13 @@ main
   let env : U EnvO = { ! envo Empty() } in
   let fn report (e: Exception) : OS =
     match e
-    | TypeError() -> ! panic "type error"
+    | ParseError(loc, msg) ->
+      do loc <- ! int_to_str loc;
+      do loc <- ! str_append loc ": ";
+      do msg <- ! str_append loc msg;
+      ! panic msg
     | FreeVariable() -> ! panic "free variable"
+    | TypeError() -> ! panic "type error"
     end
   in
   let fn value-eq (v1: Value) (v2: Value) (k: U OS) : OS =
