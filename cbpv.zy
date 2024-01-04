@@ -75,7 +75,8 @@ def fn mexn-print : MonadPrint MExnOS =
   | .print() -> fn s ->
     comatch
     | .run() -> fn ka _ ->
-      ! write_line s { ! ka Unit() }
+      do ! write_line s;
+      ! ka Unit()
     end
   end
 end
@@ -143,63 +144,56 @@ module Print where
       | Var(x) -> ! write_str x kont
       | Bool(b) -> ! if @(OS) b { ! write_str "true" kont } { ! write_str "false" kont }
       | Thunk(sc) ->
-        ! write_str "{ " {
-        ! print-scbpv .compu() sc {
-        ! write_str " }" {
+        // Note: `do <comp1>; <comp2>` is a syntactic sugar for `<comp1> { <comp2> }`
+        do ! write_str "{ ";
+        do ! print-scbpv .compu() sc;
+        do ! write_str " }";
         ! kont
-        } } }
       end
     | .compu() -> fn sc kont ->
       match sc
       | Lam(x, sc) ->
-        ! write_str "fn " {
-        ! write_str x {
-        ! write_str " -> " {
-        ! print-scbpv .compu() sc {
+        do ! write_str "fn ";
+        do ! write_str x;
+        do ! write_str " -> ";
+        do ! print-scbpv .compu() sc;
         ! kont
-        } } } }
       | App(sc, sv) ->
-        ! write_str "( " {
-        ! print-scbpv .compu() sc {
-        ! write_str " " {
-        ! print-scbpv .value() sv {
-        ! write_str " )" {
+        do ! write_str "(";
+        do ! print-scbpv .compu() sc;
+        do ! write_str " ";
+        do ! print-scbpv .value() sv;
+        do ! write_str ")";
         ! kont
-        } } } } }
       | Ret(sv) ->
-        ! write_str "ret " {
-        ! print-scbpv .value() sv {
+        do ! write_str "ret ";
+        do ! print-scbpv .value() sv;
         ! kont
-        } }
       | Bind(sc1, x, sc2) ->
         do m <- ! str_append "bind " x;
         do m <- ! str_append m " <- ";
-        ! write_str m {
-        ! print-scbpv .compu() sc1 {
-        ! write_str "; " {
-        ! print-scbpv .compu() sc2 {
+        do ! write_str m;
+        do ! print-scbpv .compu() sc1;
+        do ! write_str "; ";
+        do ! print-scbpv .compu() sc2;
         ! kont
-        } } } }
       | Force(sv) ->
-        ! write_str "call " {
-        ! print-scbpv .value() sv {
+        do ! write_str "call ";
+        do ! print-scbpv .value() sv;
         ! kont
-        } }
       | If(sv, sc1, sc2) ->
-        ! write_str "if " {
-        ! print-scbpv .value() sv {
-        ! write_str " then " {
-        ! print-scbpv .compu() sc1 {
-        ! write_str " else " {
-        ! print-scbpv .compu() sc2 {
+        do ! write_str "if ";
+        do ! print-scbpv .value() sv;
+        do ! write_str " then ";
+        do ! print-scbpv .compu() sc1;
+        do ! write_str " else ";
+        do ! print-scbpv .compu() sc2;
         ! kont
-        } } } } } }
       | Env(sc) ->
-        ! write_str "env(" {
-        ! print-scbpv .compu() sc {
-        ! write_str ")" {
+        do ! write_str "env(";
+        do ! print-scbpv .compu() sc;
+        do ! write_str ")";
         ! kont
-        } } }
       end
     end
   end
@@ -220,11 +214,10 @@ module Print where
       match v
       | Bool(b) -> ! if @(OS) b { ! write_str "true" kont } { ! write_str "false" kont }
       | Thunk(c) ->
-        ! write_str "{ " {
-        ! print-cbpv .compu() c {
-        ! write_str " }" {
+        do ! write_str "{ ";
+        do ! print-cbpv .compu() c;
+        do ! write_str " }";
         ! kont
-        } } }
       end
     | .compu() -> fn c kont ->
       ! write_str "<compu>" kont
@@ -241,18 +234,19 @@ module Print where
     do kont <- ! foldl @(TraceItem) @(U OS) trace { fn t kont ->
       match t
       | App(sc) -> ret {
-        ! write_str "  app " {
-        ! print-scompu sc {
-        ! write_line "," {
+        do ! write_str "  app ";
+        do ! print-scompu sc;
+        do ! write_line ",";
         ! kont
-      } } } }
+      }
       | Bind(x, sc) -> ret {
-        ! write_str "  bind " {
-        ! write_str x {
-        ! write_str "; " {
-        ! print-scompu sc {
-        ! write_line "," kont
-      } } } } }
+        do ! write_str "  bind ";
+        do ! write_str x;
+        do ! write_str "; ";
+        do ! print-scompu sc;
+        do ! write_line ",";
+        ! kont
+      }
       end
     } kont;
     let kont = { ! write_line "[" kont } in
@@ -286,19 +280,17 @@ def rec fn envo (env: EnvT) : EnvO =
   | .extend() -> fn x v ->
     ! envo Extend(x, v, env)
   | .print() -> fn k ->
-    ! write_line "[" {
-      (rec (p : Thunk (EnvT -> OS)) -> fn env -> match env
-      | Empty() -> ! write_line "]" k
-      | Extend(x, v, env') ->
-        ! write_str "  " {
-        ! write_str x {
-        ! write_str " = " {
-        ! print-value v {
-        ! write_line "," {
-          ! p env'
-        } } } } }
-      end) env
-    }
+    do ! write_line "[";
+    (rec (p : Thunk (EnvT -> OS)) -> fn env -> match env
+    | Empty() -> ! write_line "]" k
+    | Extend(x, v, env') ->
+      do ! write_str "  ";
+      do ! write_str x;
+      do ! write_str " = ";
+      do ! print-value v;
+      do ! write_line ",";
+      ! p env'
+    end) env
   end
 end
 
@@ -714,20 +706,18 @@ def rec fn interp (env: U EnvO) (trace: Trace) : Interp =
       let mp: U (MExnOS Unit) = {
         comatch
         | .run() -> fn ka _ ->
-          ! write_line "[[DEBUG]]" {
-          ! write_str "[env]: " {
-          ! env .print() {
-          ! write_str "[trace]: " {
-          ! print-trace trace {
-          ! write_str "Continue? " {
-          ! read_line { fn _ ->
+          do ! write_line "[[DEBUG]]";
+          do ! write_str "[env]: ";
+          do ! env .print();
+          do ! write_str "[trace]: ";
+          do ! print-trace trace;
+          do ! write_str "Continue? ";
+          do ! read_line; fn _ ->
           ! ka Unit()
-          } } } } } } }
         end
       } in
-      ! malg .bindA() @(Unit) mp { fn _ ->
-        ! interp env trace .compu() sc
-      }
+      do ! malg .bindA() @(Unit) mp; fn _ ->
+      ! interp env trace .compu() sc
     end
   end
 end
