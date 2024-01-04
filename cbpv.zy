@@ -241,15 +241,18 @@ module Print where
     do kont <- ! foldl @(TraceItem) @(U OS) trace { fn t kont ->
       match t
       | App(sc) -> ret {
-        ! write_str "  app" {
+        ! write_str "  app " {
+        ! print-scompu sc {
         ! write_line "," {
         ! kont
-      } } }
+      } } } }
       | Bind(x, sc) -> ret {
         ! write_str "  bind " {
         ! write_str x {
+        ! write_str "; " {
+        ! print-scompu sc {
         ! write_line "," kont
-      } } }
+      } } } } }
       end
     } kont;
     let kont = { ! write_line "[" kont } in
