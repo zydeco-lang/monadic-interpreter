@@ -132,11 +132,109 @@ def fn state_t_monad (S: VType) (M: VType -> CType) (mo: U (Monad M)) : Monad (S
 end
 
 module Print where
-  def fn print-value (v: Value) (kont: U OS) : OS =
-    match v
-    | Bool(b) -> ! if @(OS) b { ! write_str "true" kont } { ! write_str "false" kont }
-    | Thunk(c) -> ! write_str "<thunk>" kont
+  codata PrintSCbpv where
+    | .value(): SValue -> U OS -> OS
+    | .compu(): SCompu -> U OS -> OS
+  end
+  def rec fn print-scbpv : PrintSCbpv =
+    comatch
+    | .value() -> fn sv kont ->
+      match sv
+      | Var(x) -> ! write_str x kont
+      | Bool(b) -> ! if @(OS) b { ! write_str "true" kont } { ! write_str "false" kont }
+      | Thunk(sc) ->
+        ! write_str "{ " {
+        ! print-scbpv .compu() sc {
+        ! write_str " }" {
+        ! kont
+        } } }
+      end
+    | .compu() -> fn sc kont ->
+      match sc
+      | Lam(x, sc) ->
+        ! write_str "fn " {
+        ! write_str x {
+        ! write_str " -> " {
+        ! print-scbpv .compu() sc {
+        ! kont
+        } } } }
+      | App(sc, sv) ->
+        ! write_str "( " {
+        ! print-scbpv .compu() sc {
+        ! write_str " " {
+        ! print-scbpv .value() sv {
+        ! write_str " )" {
+        ! kont
+        } } } } }
+      | Ret(sv) ->
+        ! write_str "ret " {
+        ! print-scbpv .value() sv {
+        ! kont
+        } }
+      | Bind(sc1, x, sc2) ->
+        do m <- ! str_append "bind " x;
+        do m <- ! str_append m " <- ";
+        ! write_str m {
+        ! print-scbpv .compu() sc1 {
+        ! write_str "; " {
+        ! print-scbpv .compu() sc2 {
+        ! kont
+        } } } }
+      | Force(sv) ->
+        ! write_str "call " {
+        ! print-scbpv .value() sv {
+        ! kont
+        } }
+      | If(sv, sc1, sc2) ->
+        ! write_str "if " {
+        ! print-scbpv .value() sv {
+        ! write_str " then " {
+        ! print-scbpv .compu() sc1 {
+        ! write_str " else " {
+        ! print-scbpv .compu() sc2 {
+        ! kont
+        } } } } } }
+      | Env(sc) ->
+        ! write_str "env(" {
+        ! print-scbpv .compu() sc {
+        ! write_str ")" {
+        ! kont
+        } } }
+      end
     end
+  end
+  def fn print-svalue : SValue -> U OS -> OS =
+    ! print-scbpv .value()
+  end
+  def fn print-scompu : SCompu -> U OS -> OS =
+    ! print-scbpv .compu()
+  end
+
+  codata PrintCbpv where
+    | .value(): Value -> U OS -> OS
+    | .compu(): U Compu -> U OS -> OS
+  end
+  def rec fn print-cbpv: PrintCbpv =
+    comatch
+    | .value() -> fn v kont ->
+      match v
+      | Bool(b) -> ! if @(OS) b { ! write_str "true" kont } { ! write_str "false" kont }
+      | Thunk(c) ->
+        ! write_str "{ " {
+        ! print-cbpv .compu() c {
+        ! write_str " }" {
+        ! kont
+        } } }
+      end
+    | .compu() -> fn c kont ->
+      ! write_str "<compu>" kont
+    end
+  end
+  def fn print-value : Value -> U OS -> OS =
+    ! print-cbpv .value()
+  end
+  def fn print-compu : U Compu -> U OS -> OS =
+    ! print-cbpv .compu()
   end
   def fn print-trace (trace: Trace) (kont: U OS) : OS =
     let kont = { ! write_line "]" kont } in
