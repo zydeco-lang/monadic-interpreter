@@ -361,14 +361,13 @@ end
 pub def fn p_var : Parser String =
   let fn p_vc (c: Char) : Ret (Option Char) =
     do ascii <- ! char_to_int c;
-    ! if~ @(Ret (Option Char)) { ! or~
-      { ! and~ { ! int_lt 47 ascii } { ! int_lt ascii 58 } }
-      { ! or~
-      { ! and~ { ! int_lt 64 ascii } { ! int_lt ascii 91 } }
-      { ! and~ { ! int_lt 96 ascii } { ! int_lt ascii 123 } }
-    } }
-    { ret Some(c) }
-    { ret None() }
+    let digit = { ! and~ { ! int_lt 47 ascii } { ! int_lt ascii 58 } } in
+    let cap = { ! and~ { ! int_lt 64 ascii } { ! int_lt ascii 91 } } in
+    let sml = { ! and~ { ! int_lt 96 ascii } { ! int_lt ascii 123 } } in
+    ! if~ @(Ret (Option Char))
+      { ! or~ digit { ! or~ cap sml } }
+      { ret Some(c) }
+      { ret None() }
   in
   comatch | .run() -> fn s i ->
     let rec fn var (v: String) (i: Int) =
@@ -383,7 +382,7 @@ pub def fn p_var : Parser String =
         } {
           ! mexn-err .fail() @(Pair String Int) ParseError(i, "variable of length 0")
         } {
-          ! mexn .return() @(Pair String Int) Cons(v, i')
+          ! mexn .return() @(Pair String Int) Cons(v, i)
         }
       | Some(c) ->
         do c <- ! char_to_str c;
@@ -391,6 +390,20 @@ pub def fn p_var : Parser String =
         ! var v i'
       end
     in
+    // let m = { ! var "" i } in
+    // ! mexn .bind() @(Pair String Int) @(Pair String Int) m { fn vi ->
+    //   ! mexn .bind() @(Unit) @(Pair String Int) {
+    //     do v <- match vi | Cons(v, i) -> ret v end;
+    //     do i <- match vi | Cons(v, i) -> ! int_to_str i end;
+    //     do msg <- ! str_append "var[" i;
+    //     do msg <- ! str_append msg "](";
+    //     do msg <- ! str_append msg v;
+    //     do msg <- ! str_append msg ")";
+    //     ! mexn-print .print() msg
+    //   } { fn _ ->
+    //     ! mexn .return() @(Pair String Int) vi
+    //   }
+    // }
     ! var "" i
   end
 end
@@ -496,12 +509,15 @@ pub def rec fn p_cbpv : ParserCbpv =
     in
     let fn _app =
       ! mp .bind() @(Char) @(SCompu) { ! p_char '(' } { fn _ ->
+      // ! mp .bind() @(String) @(SCompu) { ! p_word "app" } { fn _ ->
+      // ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' } { fn _ ->
       ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() } { fn sc ->
       ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' } { fn _ ->
       ! mp .bind() @(SValue) @(SCompu) { ! p_cbpv .value() } { fn sv ->
       ! mp .bind() @(Char) @(SCompu) { ! p_char ')' } { fn _ ->
         ! mp .return() @(SCompu) App(sc, sv)
       } } } } }
+      // } }
     in
     ! mp-alt .alt() @(SCompu) _env {
     ! mp-alt .alt() @(SCompu) _ret {
@@ -624,50 +640,53 @@ def rec fn interp (env: U EnvO) (trace: Trace) : Interp =
   end
 end
 
-main
-  let env : U EnvO = { ! envo Empty() } in
-  let fn report (e: Exception) : OS =
-    match e
-    | ParseError(loc, msg) ->
-      do loc <- ! int_to_str loc;
-      do loc <- ! str_append loc ": ";
-      do msg <- ! str_append loc msg;
-      ! panic msg
-    | FreeVariable() -> ! panic "free variable"
-    | TypeError() -> ! panic "type error"
-    end
-  in
-  let fn value-eq (v1: Value) (v2: Value) (k: U OS) : OS =
-    let bool-value-panic = { ! panic "wrong bool value" } in
-    let thunk-panic = { ! panic "thunks are not comparable" } in
-    match v1
-    | Bool(b1) ->
-      match v2
-      | Bool(b2) ->
-        do eq? <- ! bool_eq b1 b2;
-        match eq?
-        | True() -> ! write_line "\\^o^/" k
-        | False() -> ! bool-value-panic
-        end
-      | Thunk(_) -> ! thunk-panic
+
+def fn value-eq (v1: Value) (v2: Value) (k: U OS) : OS =
+  let bool-value-panic = { ! panic "wrong bool value" } in
+  let thunk-panic = { ! panic "thunks are not comparable" } in
+  match v1
+  | Bool(b1) ->
+    match v2
+    | Bool(b2) ->
+      do eq? <- ! bool_eq b1 b2;
+      match eq?
+      | True() -> ! write_line "\\^o^/" k
+      | False() -> ! bool-value-panic
       end
     | Thunk(_) -> ! thunk-panic
     end
-  in
-  let fn demo (term: SCompu) (ans: Value) (k: U OS): OS =
-    ! interp env Nil() .compu() term .bind() .run() {
-      fn v -> ! value-eq v ans k
+  | Thunk(_) -> ! thunk-panic
+  end
+end
+
+def fn report (e: Exception) : OS =
+  match e
+  | ParseError(loc, msg) ->
+    do loc <- ! int_to_str loc;
+    do loc <- ! str_append loc ": ";
+    do msg <- ! str_append loc msg;
+    ! panic msg
+  | FreeVariable() -> ! panic "free variable"
+  | TypeError() -> ! panic "type error"
+  end
+end
+
+main
+  let env : U EnvO = { ! envo Empty() } in
+  let fn demo (src: String) (ans: Value) (k: U OS): OS =
+    ! mexn .bind() @(SCompu) @(Value) { ! p_main src } { fn term ->
+      ! interp env Nil() .compu() term .bind()
+    } .run() { fn v ->
+      ! value-eq v ans k
     } report
   in
   // if true then ret true else ret false
-  let term1: SCompu = If(Bool(True()), Ret(Bool(True())), Ret(Bool(False()))) in
+  let src1 = "(if true (ret true) (ret false))" in
   let ans1: Value = Bool(True()) in
-  // (do x <- ret True in \b -> if b then x else false) True
-  let term2: SCompu = App(Bind(
-    Env(Ret(Bool(True()))), "x", Env(Lam("b", If(Var("b"), Ret(Var("x")), Ret(Bool(False())))))
-  ), Bool(True())) in
+  // (do x <- ret True in \b -> if b then ret x else ret False) True
+  let src2 = "(bind (ret true) x ((fn b (if b (ret x) (ret false))) true))" in
   let ans2: Value = Bool(True()) in
-  ! demo term1 ans1 {
-  ! demo term2 ans2 {
+  ! demo src1 ans1 {
+  ! demo src2 ans2 {
   ! exit 0 }}
 end
