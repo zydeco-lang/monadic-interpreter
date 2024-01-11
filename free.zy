@@ -1,0 +1,44 @@
+// A functor structure
+codata Functor (FF: VType -> CType) where
+  | .map(): forall (A: VType) (A': VType) . U (A -> Ret A') -> U (FF A) -> FF A'
+end
+
+// A monad structure
+codata Monad (M: VType -> CType) where
+  | .return(): forall (A: VType) . A -> M A
+  | .bind(): forall (A: VType) (A': VType) . U (M A) -> U (A -> M A') -> M A'
+end
+
+// The data of free monad
+data FreeM (FF: VType -> CType) (A: VType) where
+  | Pure(A)
+  | Bind(Thunk (FF (FreeM FF A)))
+end
+
+// The free monad structure that satisfies the kind
+codata Free (FF: VType -> CType) (A: VType) where
+  | .run(): Ret (FreeM FF A)
+end
+
+def rec fn freeM (FF: VType -> CType) (func: U (Functor FF)): Monad (Free FF) =
+  comatch
+  | .return() -> fn A a ->
+    comatch | .run() -> ret Pure(a) end
+  | .bind() -> fn A A' (m: Thunk (Free FF A)) (f: Thunk (A -> Free FF A')) ->
+    do fm <- ! m .run(); // FreeM FF A
+    match fm
+    | Pure(a) -> ! f a
+    | Bind(ffm) -> 
+      comatch | .run() -> ret Bind({
+        // goal: FF (FreeM FF A')
+        ! func .map() @(FreeM FF A) @(FreeM FF A') { fn fm ->
+          ! freeM @(FF) func .bind() @(A) @(A') { comatch | .run() -> ret fm end } f .run()
+         } ffm
+      }) end
+    end
+  end
+end
+
+main
+  ! exit 0
+end
