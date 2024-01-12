@@ -233,9 +233,9 @@ module Print where
     let kont = { ! write_line "]" kont } in
     do kont <- ! foldl @(TraceItem) @(U OS) trace { fn t kont ->
       match t
-      | App(sc) -> ret {
+      | App(sv) -> ret {
         do ! write_str "  app ";
-        do ! print-scompu sc;
+        do ! print-svalue sv;
         do ! write_line ",";
         ! kont
       }
@@ -341,6 +341,13 @@ data SCompu where
   | If(SValue, SCompu, SCompu)
   | Env(SCompu)
 end
+
+data TraceItem where
+  | App(SValue)
+  | Bind(String, SCompu)
+end
+
+alias Trace = List TraceItem end
 
 /* Parser */
 
@@ -617,13 +624,6 @@ end
 
 /* Interpretor */
 
-data TraceItem where
-  | App(SCompu)
-  | Bind(String, SCompu)
-end
-
-alias Trace = List TraceItem end
-
 codata Interp where
   | .value(): SValue -> MExnOS Value
   | .compu(): SCompu -> Compu
@@ -650,13 +650,17 @@ def rec fn interp (env: U EnvO) (trace: Trace) : Interp =
     | Lam(x, sc) ->
       comatch
       | .app() -> fn v ->
+        do trace <- (match trace 
+        | Nil() -> ret Nil()
+        | Cons(_, trace) -> ret trace
+        end : Ret Trace);
         ! interp { ! env .extend() x v } trace .compu() sc
       | .bind() -> ! mexn-err .fail() @(Value) TypeError()
       end
     | App(sc, sv) ->
-      let trace': Trace = Cons(App(sc), trace) in
-      let mv = { ! interp env trace' .value() sv } in
-      ! malg .bindA() @(Value) mv { fn v -> ! interp env trace .compu() sc .app() v }
+      let trace': Trace = Cons(App(sv), trace) in
+      let mv = { ! interp env trace .value() sv } in
+      ! malg .bindA() @(Value) mv { fn v -> ! interp env trace' .compu() sc .app() v }
     | Ret(sv) ->
       comatch
       | .app() -> fn _ -> ! malg-err .failA() TypeError()
@@ -748,11 +752,7 @@ main
       ! value-eq v ans k
     } report
   in
-  let src1 = "(if true (ret true) (ret false))" in
-  let ans1: Value = Bool(True()) in
-  let src2 = "(bind (env (ret true)) x (env ((fn b (if b (ret x) (ret false))) true)))" in
-  let ans2: Value = Bool(True()) in
-  do ! demo src1 ans1;
-  do ! demo src2 ans2;
+  do ! demo "(if true (ret true) (ret false))" Bool(True());
+  do ! demo "(bind (env (ret true)) x (env ((env (fn b (if b (env (ret x)) (ret false)))) true)))" Bool(True());
   ! exit 0
 end
