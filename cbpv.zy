@@ -254,43 +254,45 @@ module Print where
   end
 end
 
-data EnvT where
-  | Empty()
-  | Extend(String, Value, EnvT)
-end
+module Env where
+  data EnvT where
+    | Empty()
+    | Extend(String, Value, EnvT)
+  end
 
-codata EnvO where
-  | .lookup(): String -> Ret (Option Value)
-  | .extend(): String -> Value -> EnvO
-  | .print(): U OS -> OS
-end
+  codata EnvO where
+    | .lookup(): String -> Ret (Option Value)
+    | .extend(): String -> Value -> EnvO
+    | .print(): U OS -> OS
+  end
 
-def rec fn envo (env: EnvT) : EnvO =
-  comatch
-  | .lookup() -> fn x ->
-    match env
-    | Empty() -> ret None()
-    | Extend(x', v, env') ->
-      do is-eq? <- ! str_eq x x';
-      match is-eq?
-      | True() -> ret Some(v)
-      | False() -> ! envo env' .lookup() x
+  def rec fn envo (env: EnvT) : EnvO =
+    comatch
+    | .lookup() -> fn x ->
+      match env
+      | Empty() -> ret None()
+      | Extend(x', v, env') ->
+        do is-eq? <- ! str_eq x x';
+        match is-eq?
+        | True() -> ret Some(v)
+        | False() -> ! envo env' .lookup() x
+        end
       end
+    | .extend() -> fn x v ->
+      ! envo Extend(x, v, env)
+    | .print() -> fn k ->
+      do ! write_line "[";
+      (rec (p : Thunk (EnvT -> OS)) -> fn env -> match env
+      | Empty() -> ! write_line "]" k
+      | Extend(x, v, env') ->
+        do ! write_str "  ";
+        do ! write_str x;
+        do ! write_str " = ";
+        do ! print-value v;
+        do ! write_line ",";
+        ! p env'
+      end) env
     end
-  | .extend() -> fn x v ->
-    ! envo Extend(x, v, env)
-  | .print() -> fn k ->
-    do ! write_line "[";
-    (rec (p : Thunk (EnvT -> OS)) -> fn env -> match env
-    | Empty() -> ! write_line "]" k
-    | Extend(x, v, env') ->
-      do ! write_str "  ";
-      do ! write_str x;
-      do ! write_str " = ";
-      do ! print-value v;
-      do ! write_line ",";
-      ! p env'
-    end) env
   end
 end
 
@@ -351,274 +353,276 @@ alias Trace = List TraceItem end
 
 /* Parser */
 
-codata Parser (A: VType) where
-  | .run(): String -> Int -> MExnOS (Pair A Int)
-end
+module Parser where
+  codata Parser (A: VType) where
+    | .run(): String -> Int -> MExnOS (Pair A Int)
+  end
 
-pub def fn mp : Monad Parser =
-  comatch
-  | .return() -> fn A a ->
+  pub def fn mp : Monad Parser =
     comatch
-    | .run() -> fn s i -> ! mexn .return() @(Pair A Int) Cons(a, i)
-    end
-  | .bind() -> fn A A' ma f ->
-    comatch
-    | .run() -> fn s i ->
+    | .return() -> fn A a ->
       comatch
-      | .run() -> fn ka ke ->
-        ! ma .run() s i .run() { fn p -> match p | Cons(a, i) ->
-          ! f a .run() s i .run() ka ke
-        end } ke
+      | .run() -> fn s i -> ! mexn .return() @(Pair A Int) Cons(a, i)
       end
-    end
-  end
-end
-
-pub def fn mp-err : MonadErr Parser =
-  comatch
-  | .fail() -> fn A e ->
-    comatch
-    | .run() -> fn s i ->
+    | .bind() -> fn A A' ma f ->
       comatch
-      | .run() -> fn _ ke -> ! ke e
+      | .run() -> fn s i ->
+        comatch
+        | .run() -> fn ka ke ->
+          ! ma .run() s i .run() { fn p -> match p | Cons(a, i) ->
+            ! f a .run() s i .run() ka ke
+          end } ke
+        end
       end
     end
   end
-end
 
-pub def fn mp-alt : MonadAlt Parser =
-  comatch
-  | .alt() -> fn A m1 m2 ->
+  pub def fn mp-err : MonadErr Parser =
     comatch
-    | .run() -> fn s i ->
-      ! mexn-alt .alt() @(Pair A Int) { ! m1 .run() s i } { ! m2 .run() s i }
-    end
-  end
-end
-
-pub def fn mp-cnt (A: VType) (cnt: Int) (m: U (Parser A)) : Parser A =
-  comatch | .run() -> fn s i ->
-    do len <- ! str_length s;
-    do i' <- ! add i cnt;
-    ! if~ @(MExnOS (Pair A Int)) { ! int_le i' len } {
-      ! m .run() s i
-    } {
-      ! mexn-err .fail() @(Pair A Int) ParseError(i, "unexpected eof")
-    }
-  end
-end
-
-pub def fn p_char (c: Char) : Parser Char =
-  ! mp-cnt @(Char) 1 {
-    comatch | .run() -> fn s i ->
-      ! if~ @(MExnOS (Pair Char Int)) {
-        do c' <- ! str_index s i;
-        ! char_eq c' c
-      } {
-        do i' <- ! add i 1;
-        ! mexn .return() @(Pair Char Int) Cons(c, i')
-      } {
-        do msg <- ! char_to_str c;
-        do msg <- ! str_append "missing `" msg;
-        do msg <- ! str_append msg "`";
-        ! mexn-err .fail() @(Pair Char Int) ParseError(i, msg)
-      }
-    end
-  }
-end
-
-pub def fn p_word (w: String) : Parser String =
-  do len <- ! str_length w;
-  ! mp-cnt @(String) len {
-    comatch | .run() -> fn s i ->
-      let rec fn word_match (j: Int) =
-        ! if~ @(Ret Bool) { ! int_eq j len } {
-          ret True()
-        } {
-          do l <- ! add i j;
-          do c1 <- ! str_index s l;
-          do c2 <- ! str_index w j;
-          ! if~ @(Ret Bool) { ! char_eq c1 c2 } {
-            do j' <- ! add j 1;
-            ! word_match j'
-          } {
-            ret False()
-          }
-        }
-      in
-      ! if~ @(MExnOS (Pair String Int)) { ! word_match 0 } {
-        do i' <- ! add i len;
-        ! mexn .return() @(Pair String Int) Cons(w, i')
-      } {
-        do msg <- ! str_append "word `" w;
-        do msg <- ! str_append msg "` mismatch";
-        ! mexn-err .fail() @(Pair String Int) ParseError(i, msg)
-      }
-    end
-  }
-end
-
-pub def fn p_var : Parser String =
-  let fn p_vc (c: Char) : Ret (Option Char) =
-    do ascii <- ! char_to_int c;
-    let digit = { ! and~ { ! int_lt 47 ascii } { ! int_lt ascii 58 } } in
-    let cap = { ! and~ { ! int_lt 64 ascii } { ! int_lt ascii 91 } } in
-    let sml = { ! and~ { ! int_lt 96 ascii } { ! int_lt ascii 123 } } in
-    ! if~ @(Ret (Option Char))
-      { ! or~ digit { ! or~ cap sml } }
-      { ret Some(c) }
-      { ret None() }
-  in
-  comatch | .run() -> fn s i ->
-    let rec fn var (v: String) (i: Int) =
-      do c <- ! str_index s i;
-      do c? <- ! p_vc c;
-      do i' <- ! add i 1;
-      match c?
-      | None() ->
-        ! if~ @(MExnOS (Pair String Int)) {
-          do len <- ! str_length v;
-          ! int_eq len 0
-        } {
-          ! mexn-err .fail() @(Pair String Int) ParseError(i, "variable of length 0")
-        } {
-          ! mexn .return() @(Pair String Int) Cons(v, i)
-        }
-      | Some(c) ->
-        do c <- ! char_to_str c;
-        do v <- ! str_append v c;
-        ! var v i'
+    | .fail() -> fn A e ->
+      comatch
+      | .run() -> fn s i ->
+        comatch
+        | .run() -> fn _ ke -> ! ke e
+        end
       end
-    in
-    ! var "" i
-  end
-end
-
-codata ParserCbpv where
-  | .value(): Parser SValue
-  | .compu(): Parser SCompu
-end
-
-pub def rec fn p_cbpv : ParserCbpv =
-  comatch
-  | .value() ->
-    let fn _true =
-      do ! mp .bind() @(String) @(SValue) { ! p_word "true" }; fn _ ->
-      ! mp .return() @(SValue) Bool(True())
-    in
-    let fn _false =
-      do ! mp .bind() @(String) @(SValue) { ! p_word "false" }; fn _ ->
-      ! mp .return() @(SValue) Bool(False())
-    in
-    let fn _var =
-      do ! mp .bind() @(String) @(SValue) p_var; fn v ->
-      ! mp .return() @(SValue) Var(v)
-    in
-    let fn _thunk =
-      do ! mp .bind() @(Char) @(SValue) { ! p_char '{' }; fn _ ->
-      do ! mp .bind() @(SCompu) @(SValue) { ! p_cbpv .compu() }; fn sc ->
-      do ! mp .bind() @(Char) @(SValue) { ! p_char '}' }; fn _ ->
-      ! mp .return() @(SValue) Thunk(sc)
-    in
-    do ! mp-alt .alt() @(SValue) _true;
-    do ! mp-alt .alt() @(SValue) _false;
-    do ! mp-alt .alt() @(SValue) _var;
-    do ! mp-alt .alt() @(SValue) _thunk;
-    comatch | .run() -> fn s i ->
-      ! mexn-err .fail() @(Pair SValue Int) ParseError(i, "expected value")
-    end
-  | .compu() ->
-    let fn _env =
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
-      do ! mp .bind() @(String) @(SCompu) { ! p_word "env" }; fn _ ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
-      ! mp .return() @(SCompu) Env(sc)
-    in
-    let fn _ret =
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
-      do ! mp .bind() @(String) @(SCompu) { ! p_word "ret" }; fn _ ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(SValue) @(SCompu) { ! p_cbpv .value() }; fn sv ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
-      ! mp .return() @(SCompu) Ret(sv)
-    in
-    let fn _bind =
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
-      do ! mp .bind() @(String) @(SCompu) { ! p_word "bind" }; fn _ ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc1 ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(String) @(SCompu) p_var; fn v ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc2 ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
-      ! mp .return() @(SCompu) Bind(sc1, v, sc2)
-    in
-    let fn _force =
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
-      do ! mp .bind() @(String) @(SCompu) { ! p_word "call" }; fn _ ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(SValue) @(SCompu) { ! p_cbpv .value() }; fn sv ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
-      ! mp .return() @(SCompu) Force(sv)
-    in
-    let fn _if =
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
-      do ! mp .bind() @(String) @(SCompu) { ! p_word "if" }; fn _ ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(SValue) @(SCompu) { ! p_cbpv .value() }; fn sv ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc1 ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc2 ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
-      ! mp .return() @(SCompu) If(sv, sc1, sc2)
-    in
-    let fn _lam =
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
-      do ! mp .bind() @(String) @(SCompu) { ! p_word "fn" }; fn _ ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(String) @(SCompu) p_var; fn v ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
-      ! mp .return() @(SCompu) Lam(v, sc)
-    in
-    let fn _app =
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
-      do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
-      do ! mp .bind() @(SValue) @(SCompu) { ! p_cbpv .value() }; fn sv ->
-      do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
-      ! mp .return() @(SCompu) App(sc, sv)
-    in
-    do ! mp-alt .alt() @(SCompu) _env;
-    do ! mp-alt .alt() @(SCompu) _ret;
-    do ! mp-alt .alt() @(SCompu) _bind;
-    do ! mp-alt .alt() @(SCompu) _force;
-    do ! mp-alt .alt() @(SCompu) _if;
-    do ! mp-alt .alt() @(SCompu) _lam;
-    do ! mp-alt .alt() @(SCompu) _app;
-    comatch | .run() -> fn s i ->
-      ! mexn-err .fail() @(Pair SCompu Int) ParseError(i, "expected computation")
     end
   end
-end
 
-pub def fn p_main (s: String) : MExnOS SCompu =
-  do ! mexn .bind() @(Pair SCompu Int) @(SCompu) { ! p_cbpv .compu() .run() s 0 }; fn sci ->
-  match sci
-  | Cons(sc, i) ->
-    ! if~ @(MExnOS SCompu) {
+  pub def fn mp-alt : MonadAlt Parser =
+    comatch
+    | .alt() -> fn A m1 m2 ->
+      comatch
+      | .run() -> fn s i ->
+        ! mexn-alt .alt() @(Pair A Int) { ! m1 .run() s i } { ! m2 .run() s i }
+      end
+    end
+  end
+
+  pub def fn mp-cnt (A: VType) (cnt: Int) (m: U (Parser A)) : Parser A =
+    comatch | .run() -> fn s i ->
       do len <- ! str_length s;
-      ! int_eq i len
-    } {
-      ! mexn .return() @(SCompu) sc
-    } {
-      ! mexn-err .fail() @(SCompu) ParseError(i, "not eof after parsing")
+      do i' <- ! add i cnt;
+      ! if~ @(MExnOS (Pair A Int)) { ! int_le i' len } {
+        ! m .run() s i
+      } {
+        ! mexn-err .fail() @(Pair A Int) ParseError(i, "unexpected eof")
+      }
+    end
+  end
+
+  pub def fn p_char (c: Char) : Parser Char =
+    ! mp-cnt @(Char) 1 {
+      comatch | .run() -> fn s i ->
+        ! if~ @(MExnOS (Pair Char Int)) {
+          do c' <- ! str_index s i;
+          ! char_eq c' c
+        } {
+          do i' <- ! add i 1;
+          ! mexn .return() @(Pair Char Int) Cons(c, i')
+        } {
+          do msg <- ! char_to_str c;
+          do msg <- ! str_append "missing `" msg;
+          do msg <- ! str_append msg "`";
+          ! mexn-err .fail() @(Pair Char Int) ParseError(i, msg)
+        }
+      end
     }
+  end
+
+  pub def fn p_word (w: String) : Parser String =
+    do len <- ! str_length w;
+    ! mp-cnt @(String) len {
+      comatch | .run() -> fn s i ->
+        let rec fn word_match (j: Int) =
+          ! if~ @(Ret Bool) { ! int_eq j len } {
+            ret True()
+          } {
+            do l <- ! add i j;
+            do c1 <- ! str_index s l;
+            do c2 <- ! str_index w j;
+            ! if~ @(Ret Bool) { ! char_eq c1 c2 } {
+              do j' <- ! add j 1;
+              ! word_match j'
+            } {
+              ret False()
+            }
+          }
+        in
+        ! if~ @(MExnOS (Pair String Int)) { ! word_match 0 } {
+          do i' <- ! add i len;
+          ! mexn .return() @(Pair String Int) Cons(w, i')
+        } {
+          do msg <- ! str_append "word `" w;
+          do msg <- ! str_append msg "` mismatch";
+          ! mexn-err .fail() @(Pair String Int) ParseError(i, msg)
+        }
+      end
+    }
+  end
+
+  pub def fn p_var : Parser String =
+    let fn p_vc (c: Char) : Ret (Option Char) =
+      do ascii <- ! char_to_int c;
+      let digit = { ! and~ { ! int_lt 47 ascii } { ! int_lt ascii 58 } } in
+      let cap = { ! and~ { ! int_lt 64 ascii } { ! int_lt ascii 91 } } in
+      let sml = { ! and~ { ! int_lt 96 ascii } { ! int_lt ascii 123 } } in
+      ! if~ @(Ret (Option Char))
+        { ! or~ digit { ! or~ cap sml } }
+        { ret Some(c) }
+        { ret None() }
+    in
+    comatch | .run() -> fn s i ->
+      let rec fn var (v: String) (i: Int) =
+        do c <- ! str_index s i;
+        do c? <- ! p_vc c;
+        do i' <- ! add i 1;
+        match c?
+        | None() ->
+          ! if~ @(MExnOS (Pair String Int)) {
+            do len <- ! str_length v;
+            ! int_eq len 0
+          } {
+            ! mexn-err .fail() @(Pair String Int) ParseError(i, "variable of length 0")
+          } {
+            ! mexn .return() @(Pair String Int) Cons(v, i)
+          }
+        | Some(c) ->
+          do c <- ! char_to_str c;
+          do v <- ! str_append v c;
+          ! var v i'
+        end
+      in
+      ! var "" i
+    end
+  end
+
+  codata ParserCbpv where
+    | .value(): Parser SValue
+    | .compu(): Parser SCompu
+  end
+
+  pub def rec fn p_cbpv : ParserCbpv =
+    comatch
+    | .value() ->
+      let fn _true =
+        do ! mp .bind() @(String) @(SValue) { ! p_word "true" }; fn _ ->
+        ! mp .return() @(SValue) Bool(True())
+      in
+      let fn _false =
+        do ! mp .bind() @(String) @(SValue) { ! p_word "false" }; fn _ ->
+        ! mp .return() @(SValue) Bool(False())
+      in
+      let fn _var =
+        do ! mp .bind() @(String) @(SValue) p_var; fn v ->
+        ! mp .return() @(SValue) Var(v)
+      in
+      let fn _thunk =
+        do ! mp .bind() @(Char) @(SValue) { ! p_char '{' }; fn _ ->
+        do ! mp .bind() @(SCompu) @(SValue) { ! p_cbpv .compu() }; fn sc ->
+        do ! mp .bind() @(Char) @(SValue) { ! p_char '}' }; fn _ ->
+        ! mp .return() @(SValue) Thunk(sc)
+      in
+      do ! mp-alt .alt() @(SValue) _true;
+      do ! mp-alt .alt() @(SValue) _false;
+      do ! mp-alt .alt() @(SValue) _var;
+      do ! mp-alt .alt() @(SValue) _thunk;
+      comatch | .run() -> fn s i ->
+        ! mexn-err .fail() @(Pair SValue Int) ParseError(i, "expected value")
+      end
+    | .compu() ->
+      let fn _env =
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
+        do ! mp .bind() @(String) @(SCompu) { ! p_word "env" }; fn _ ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
+        ! mp .return() @(SCompu) Env(sc)
+      in
+      let fn _ret =
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
+        do ! mp .bind() @(String) @(SCompu) { ! p_word "ret" }; fn _ ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(SValue) @(SCompu) { ! p_cbpv .value() }; fn sv ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
+        ! mp .return() @(SCompu) Ret(sv)
+      in
+      let fn _bind =
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
+        do ! mp .bind() @(String) @(SCompu) { ! p_word "bind" }; fn _ ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc1 ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(String) @(SCompu) p_var; fn v ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc2 ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
+        ! mp .return() @(SCompu) Bind(sc1, v, sc2)
+      in
+      let fn _force =
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
+        do ! mp .bind() @(String) @(SCompu) { ! p_word "call" }; fn _ ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(SValue) @(SCompu) { ! p_cbpv .value() }; fn sv ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
+        ! mp .return() @(SCompu) Force(sv)
+      in
+      let fn _if =
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
+        do ! mp .bind() @(String) @(SCompu) { ! p_word "if" }; fn _ ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(SValue) @(SCompu) { ! p_cbpv .value() }; fn sv ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc1 ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc2 ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
+        ! mp .return() @(SCompu) If(sv, sc1, sc2)
+      in
+      let fn _lam =
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
+        do ! mp .bind() @(String) @(SCompu) { ! p_word "fn" }; fn _ ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(String) @(SCompu) p_var; fn v ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
+        ! mp .return() @(SCompu) Lam(v, sc)
+      in
+      let fn _app =
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
+        do ! mp .bind() @(SCompu) @(SCompu) { ! p_cbpv .compu() }; fn sc ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
+        do ! mp .bind() @(SValue) @(SCompu) { ! p_cbpv .value() }; fn sv ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
+        ! mp .return() @(SCompu) App(sc, sv)
+      in
+      do ! mp-alt .alt() @(SCompu) _env;
+      do ! mp-alt .alt() @(SCompu) _ret;
+      do ! mp-alt .alt() @(SCompu) _bind;
+      do ! mp-alt .alt() @(SCompu) _force;
+      do ! mp-alt .alt() @(SCompu) _if;
+      do ! mp-alt .alt() @(SCompu) _lam;
+      do ! mp-alt .alt() @(SCompu) _app;
+      comatch | .run() -> fn s i ->
+        ! mexn-err .fail() @(Pair SCompu Int) ParseError(i, "expected computation")
+      end
+    end
+  end
+
+  pub def fn p_main (s: String) : MExnOS SCompu =
+    do ! mexn .bind() @(Pair SCompu Int) @(SCompu) { ! p_cbpv .compu() .run() s 0 }; fn sci ->
+    match sci
+    | Cons(sc, i) ->
+      ! if~ @(MExnOS SCompu) {
+        do len <- ! str_length s;
+        ! int_eq i len
+      } {
+        ! mexn .return() @(SCompu) sc
+      } {
+        ! mexn-err .fail() @(SCompu) ParseError(i, "not eof after parsing")
+      }
+    end
   end
 end
 
