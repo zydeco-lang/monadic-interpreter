@@ -26,6 +26,12 @@ codata MonadTrans (T: (VType -> CType) -> VType -> CType) where
   | .lift(): forall (M: VType -> CType) (A: VType) . U (Monad M) -> U (M A) -> T M A
 end
 
+// A comonad structure
+codata Comonad (W: CType -> VType) where
+  | .extract(): forall (B: CType) . W B -> B
+  | .extend(): forall (B: CType) (B': CType) . W B -> U (W B -> B') -> F (W B')
+end
+
 // An algebra structure that supports fail
 codata Algebra (M: VType -> CType) (B: CType) where
   | .bindA(): forall (A: VType) . U (M A) -> U (A -> B) -> B
@@ -72,13 +78,6 @@ data SCompu where
   | If(SValue, SCompu, SCompu)
   | Env(SCompu)
 end
-
-data TraceItem where
-  | App(SValue)
-  | Bind(String, SCompu)
-end
-
-alias Trace = List TraceItem end
 
 module MExnOS where
   def fn mexn : Monad MExnOS =
@@ -262,29 +261,6 @@ module Print where
   def fn print-compu : U Compu -> U OS -> OS =
     ! print-cbpv .compu()
   end
-  def fn print-trace (trace: Trace) (kont: U OS) : OS =
-    let kont = { ! write_line "]" kont } in
-    do kont <- ! foldl @(TraceItem) @(U OS) trace { fn t kont ->
-      match t
-      | App(sv) -> ret {
-        do ! write_str "  app ";
-        do ! print-svalue sv;
-        do ! write_line ",";
-        ! kont
-      }
-      | Bind(x, sc) -> ret {
-        do ! write_str "  bind ";
-        do ! write_str x;
-        do ! write_str "; ";
-        do ! print-scompu sc;
-        do ! write_line ",";
-        ! kont
-      }
-      end
-    } kont;
-    let kont = { ! write_line "[" kont } in
-    ! kont
-  end
 end
 
 module Env where
@@ -327,6 +303,54 @@ module Env where
       end) env
     end
   end
+end
+
+module Trace where
+  // data TraceT where
+  //   | App(Value, TraceT)
+  //   | Bind(String, SCompu)
+  // end
+
+  // codata TraceO where
+  // end
+
+  def fn print-trace (vs: List Value) (kont: U OS) : OS =
+    do ! write_line "[";
+    do kont <-
+      do ! foldl @(Value) @(U OS) vs { fn v kont -> ret {
+        do ! write_str "  app ";
+        do ! print-value v;
+        do ! write_line ",";
+        ! kont
+      }};
+      ! write_line "]" kont
+    ;
+    ! kont
+  end
+
+  // def fn print-trace (trace: Trace) (kont: U OS) : OS =
+  //   let kont = { ! write_line "]" kont } in
+  //   do kont <- ! foldl @(TraceItem) @(U OS) trace { fn t kont ->
+  //     match t
+  //     | App(sv) -> ret {
+  //       do ! write_str "  app ";
+  //       do ! print-svalue sv;
+  //       do ! write_line ",";
+  //       ! kont
+  //     }
+  //     | Bind(x, sc) -> ret {
+  //       do ! write_str "  bind ";
+  //       do ! write_str x;
+  //       do ! write_str "; ";
+  //       do ! print-scompu sc;
+  //       do ! write_line ",";
+  //       ! kont
+  //     }
+  //     end
+  //   } kont;
+  //   let kont = { ! write_line "[" kont } in
+  //   ! kont
+  // end
 end
 
 /* Parser */
@@ -663,30 +687,34 @@ def rec fn interp (env: U EnvO) : Interp =
       | Thunk(_) -> ! malg-err .failA() TypeError()
       end
     | Env(sc) ->
-      let rec fn walk: Compu =
+      let rec fn walk (vs: List Value): Compu =
         comatch
         | .app() -> fn v ->
-          ! interp env .compu() sc .app() v
+          ! walk Cons(v, vs)
         | .bind() ->
-          ! interp env .compu() sc .bind()
+          let mp: U (MExnOS Unit) = {
+            comatch | .run() -> fn ka _ ->
+              do ! write_line "[[DEBUG]]";
+              do ! write_str "[env]: ";
+              do ! env .print();
+              do ! write_str "[app-stack]: ";
+              do ! print-trace vs;
+              do ! write_str "Continue? ";
+              do ! read_line; fn _ ->
+              ! ka Unit()
+            end
+          } in
+          do ! mexn .bind() @(Unit) @(Value) mp; fn _ ->
+          let rec fn cowalk (vs: List Value): Compu =
+            match vs
+            | Nil() -> ! interp env .compu() sc
+            | Cons(v, vs) -> ! cowalk vs .app() v
+            end
+          in
+          ! cowalk vs .bind()
         end
       in
-      ! walk
-      // let mp: U (MExnOS Unit) = {
-      //   comatch
-      //   | .run() -> fn ka _ ->
-      //     do ! write_line "[[DEBUG]]";
-      //     do ! write_str "[env]: ";
-      //     do ! env .print();
-      //     do ! write_str "[trace]: ";
-      //     do ! print-trace trace;
-      //     do ! write_str "Continue? ";
-      //     do ! read_line; fn _ ->
-      //     ! ka Unit()
-      //   end
-      // } in
-      // do ! malg .bindA() @(Unit) mp; fn _ ->
-      // ! interp env trace .compu() sc
+      ! walk Nil()
     end
   end
 end
