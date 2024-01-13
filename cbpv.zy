@@ -47,87 +47,120 @@ codata MExnOS (A: VType) where
   | .run(): U (A -> OS) -> U (Exception -> OS) -> OS
 end
 
-def fn mexn : Monad MExnOS =
-  comatch
-  | .return() -> fn A a ->
+data Value where
+  | Bool(Bool)
+  | Thunk(U Compu)
+end
+
+codata Compu where
+  | .app(): Value -> Compu
+  | .bind(): MExnOS Value
+end
+
+data SValue where
+  | Var(String)
+  | Bool(Bool)
+  | Thunk(SCompu)
+end
+
+data SCompu where
+  | Lam(String, SCompu)
+  | App(SCompu, SValue)
+  | Ret(SValue)
+  | Bind(SCompu, String, SCompu)
+  | Force(SValue)
+  | If(SValue, SCompu, SCompu)
+  | Env(SCompu)
+end
+
+data TraceItem where
+  | App(SValue)
+  | Bind(String, SCompu)
+end
+
+alias Trace = List TraceItem end
+
+module MExnOS where
+  def fn mexn : Monad MExnOS =
     comatch
-    | .run() -> fn ka _ -> ! ka a
-    end
-  | .bind() -> fn A A' m f ->
-    comatch
-    | .run() -> fn ka ke ->
-      ! m .run() { fn a -> ! f a .run() ka ke } ke
+    | .return() -> fn A a ->
+      comatch
+      | .run() -> fn ka _ -> ! ka a
+      end
+    | .bind() -> fn A A' m f ->
+      comatch
+      | .run() -> fn ka ke ->
+        ! m .run() { fn a -> ! f a .run() ka ke } ke
+      end
     end
   end
-end
 
-def fn mexn-err : MonadErr MExnOS =
-  comatch
-  | .fail() -> fn A e ->
+  def fn mexn-err : MonadErr MExnOS =
     comatch
-    | .run() -> fn _ ke -> ! ke e
+    | .fail() -> fn A e ->
+      comatch
+      | .run() -> fn _ ke -> ! ke e
+      end
     end
   end
-end
 
-def fn mexn-print : MonadPrint MExnOS =
-  comatch
-  | .print() -> fn s ->
+  def fn mexn-print : MonadPrint MExnOS =
     comatch
-    | .run() -> fn ka _ ->
-      do ! write_line s;
-      ! ka Unit()
+    | .print() -> fn s ->
+      comatch
+      | .run() -> fn ka _ ->
+        do ! write_line s;
+        ! ka Unit()
+      end
     end
   end
-end
 
-def fn mexn-alt : MonadAlt MExnOS =
-  comatch
-  | .alt() -> fn A m1 m2 ->
+  def fn mexn-alt : MonadAlt MExnOS =
     comatch
-    | .run() -> fn ka ke ->
-      ! m1 .run() ka { fn _ ->
-        ! m2 .run() ka ke
-      }
+    | .alt() -> fn A m1 m2 ->
+      comatch
+      | .run() -> fn ka ke ->
+        ! m1 .run() ka { fn _ ->
+          ! m2 .run() ka ke
+        }
+      end
     end
   end
-end
 
-def fn mexn-reduce : MonadReduce MExnOS =
-  comatch
-  | .reduce() -> fn A ms m ->
-    do m~ <- ! foldl @(U (MExnOS A)) @(U (MExnOS A)) ms {
-      fn m' m -> ret {
-        comatch
-        | .run() -> fn ka ke ->
-          ! m' .run() ka { fn _ -> ! m .run() ka ke }
-        end
-      }
-    } m;
-    ! m~
-  end
-end
-
-codata StateT (S: VType) (M: VType -> CType) (A: VType) where
-  | .run(): S -> M (Pair S A)
-end
-
-def fn state_t_monad (S: VType) (M: VType -> CType) (mo: U (Monad M)) : Monad (StateT S M) =
-  comatch
-  | .return() -> fn A a ->
-    // goal: StateT S M A
+  def fn mexn-reduce : MonadReduce MExnOS =
     comatch
-    | .run() -> fn s -> ! mo .return() @(Pair S A) Cons(s, a)
+    | .reduce() -> fn A ms m ->
+      do m~ <- ! foldl @(U (MExnOS A)) @(U (MExnOS A)) ms {
+        fn m' m -> ret {
+          comatch
+          | .run() -> fn ka ke ->
+            ! m' .run() ka { fn _ -> ! m .run() ka ke }
+          end
+        }
+      } m;
+      ! m~
     end
-  | .bind() -> fn A A' m f -> // m: U (StateT S M A), f: U (A -> StateT S M A')
-    // goal: StateT S M A'
+  end
+
+  def rec fn malg : Algebra MExnOS Compu =
     comatch
-    | .run() -> fn s ->
-      ! mo .bind() @(Pair S A) @(Pair S A') { ! m .run() s } { fn sa ->
-        match sa
-        | Cons(s, a) -> ! f a .run() s
-        end
-      }
+    | .bindA() -> fn A m f -> // m : U (MExnOS A), f: U (A -> Compu)
+      comatch
+      | .app() -> fn a -> // goal: Compu
+        ! malg .bindA() @(A) m { fn v -> ! f v .app() a }
+      | .bind() -> // goal: MExnOS Value, use ordinary bind
+        ! mexn .bind() @(A) @(Value) m { fn x -> ! f x .bind() }
+      end
+    end
+  end
+
+  def rec fn malg-err : AlgebraErr MExnOS Compu =
+    comatch
+    | .failA() -> fn e ->
+      rec unwind -> comatch
+      | .app() -> fn _ -> ! unwind
+      | .bind() -> ! mexn-err .fail() @(Value) e
+      end
     end
   end
 end
@@ -295,61 +328,6 @@ module Env where
     end
   end
 end
-
-data Value where
-  | Bool(Bool)
-  | Thunk(U Compu)
-end
-
-codata Compu where
-  | .app(): Value -> Compu
-  | .bind(): MExnOS Value
-end
-
-def rec fn malg : Algebra MExnOS Compu =
-  comatch
-  | .bindA() -> fn A m f -> // m : U (MExnOS A), f: U (A -> Compu)
-    comatch
-    | .app() -> fn a -> // goal: Compu
-      ! malg .bindA() @(A) m { fn v -> ! f v .app() a }
-    | .bind() -> // goal: MExnOS Value, use ordinary bind
-      ! mexn .bind() @(A) @(Value) m { fn x -> ! f x .bind() }
-    end
-  end
-end
-
-def rec fn malg-err : AlgebraErr MExnOS Compu =
-  comatch
-  | .failA() -> fn e ->
-    rec unwind -> comatch
-    | .app() -> fn _ -> ! unwind
-    | .bind() -> ! mexn-err .fail() @(Value) e
-    end
-  end
-end
-
-data SValue where
-  | Var(String)
-  | Bool(Bool)
-  | Thunk(SCompu)
-end
-
-data SCompu where
-  | Lam(String, SCompu)
-  | App(SCompu, SValue)
-  | Ret(SValue)
-  | Bind(SCompu, String, SCompu)
-  | Force(SValue)
-  | If(SValue, SCompu, SCompu)
-  | Env(SCompu)
-end
-
-data TraceItem where
-  | App(SValue)
-  | Bind(String, SCompu)
-end
-
-alias Trace = List TraceItem end
 
 /* Parser */
 
@@ -663,8 +641,8 @@ def rec fn interp (env: U EnvO) (trace: Trace) : Interp =
       end
     | App(sc, sv) ->
       let trace': Trace = Cons(App(sv), trace) in
-      let mv = { ! interp env trace .value() sv } in
-      ! malg .bindA() @(Value) mv { fn v -> ! interp env trace' .compu() sc .app() v }
+      do ! malg .bindA() @(Value) { ! interp env trace .value() sv }; fn v ->
+      ! interp env trace' .compu() sc .app() v
     | Ret(sv) ->
       comatch
       | .app() -> fn _ -> ! malg-err .failA() TypeError()
@@ -672,30 +650,24 @@ def rec fn interp (env: U EnvO) (trace: Trace) : Interp =
       end
     | Bind(sc1, x, sc2) ->
       let trace': Trace = Cons(Bind(x, sc2), trace) in
-      let mv = { ! interp env trace' .compu() sc1 .bind() } in
-      ! malg .bindA() @(Value) mv { fn v ->
-        ! interp { ! env .extend() x v } trace .compu() sc2
-      }
+      do ! malg .bindA() @(Value) { ! interp env trace' .compu() sc1 .bind() }; fn v ->
+      ! interp { ! env .extend() x v } trace .compu() sc2
     | Force(sv) ->
-      let mv = { ! interp env trace .value() sv } in
-      ! malg .bindA() @(Value) mv { fn v ->
-        match v
-        | Bool(_) -> ! malg-err .failA() TypeError()
-        | Thunk(c) -> ! c
-        end
-      }
+      do ! malg .bindA() @(Value) { ! interp env trace .value() sv }; fn v ->
+      match v
+      | Bool(_) -> ! malg-err .failA() TypeError()
+      | Thunk(c) -> ! c
+      end
     | If(sv, c1, c2) ->
-      let mv = { ! interp env trace .value() sv } in
-      ! malg .bindA() @(Value) mv { fn v ->
-        match v
-        | Bool(b) ->
-          match b
-          | True() -> ! interp env trace .compu() c1
-          | False() -> ! interp env trace .compu() c2
-          end
-        | Thunk(_) -> ! malg-err .failA() TypeError()
+      do ! malg .bindA() @(Value) { ! interp env trace .value() sv }; fn v ->
+      match v
+      | Bool(b) ->
+        match b
+        | True() -> ! interp env trace .compu() c1
+        | False() -> ! interp env trace .compu() c2
         end
-      }
+      | Thunk(_) -> ! malg-err .failA() TypeError()
+      end
     | Env(sc) ->
       let mp: U (MExnOS Unit) = {
         comatch
@@ -715,7 +687,6 @@ def rec fn interp (env: U EnvO) (trace: Trace) : Interp =
     end
   end
 end
-
 
 def fn value-eq (v1: Value) (v2: Value) (k: U OS) : OS =
   let bool-value-panic = { ! panic "wrong bool value" } in
