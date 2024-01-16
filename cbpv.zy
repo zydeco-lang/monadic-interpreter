@@ -700,7 +700,10 @@ def rec fn interp (env: U EnvO) : Interp =
               do ! write_line "[[DEBUG]]";
               do ! write_str "[env]: ";
               do ! env .print();
-              do ! write_str "[app-stack]: ";
+              do ! write_str "[term]: ";
+              do ! print-scompu sc;
+              do ! write_line "";
+              do ! write_str "[stack]: ";
               do ! print-trace items;
               do ! write_str "Continue? ";
               do ! read_line; fn _ ->
