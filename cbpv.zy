@@ -317,30 +317,37 @@ module Trace where
     | Bind(String, SCompu, U (Value -> Compu))
   end
 
-  def fn print-trace (items: List TraceItem) (kont: U OS) : OS =
-    do ! write_line "[";
-    do kont <-
-      do ! foldl @(TraceItem) @(U OS) items { fn item kont -> ret {
-        match item
-        | App(v) ->
-        // | App(_sv, v) ->
-          do ! write_str "  app ";
-          do ! print-value v;
-          do ! write_line ",";
-          ! kont
-        // | Bind(_k) ->
-        | Bind(x, sc, _k) ->
-          do ! write_str "  bind ";
-          do ! write_str x;
-          do ! write_str ". ";
-          do ! print-scompu sc;
-          do ! write_line ",";
-          ! kont
-        end
-      }};
-      ! write_line "]" kont
-    ;
-    ! kont
+  codata TraceO where
+    | .print(): U OS -> OS
+  end
+
+  def fn traceo (items: List TraceItem) : TraceO =
+    comatch
+    | .print() -> fn kont ->
+      do ! write_line "[";
+      do kont <-
+        do ! foldl @(TraceItem) @(U OS) items { fn item kont -> ret {
+          match item
+          | App(v) ->
+          // | App(_sv, v) ->
+            do ! write_str "  app ";
+            do ! print-value v;
+            do ! write_line ",";
+            ! kont
+          // | Bind(_k) ->
+          | Bind(x, sc, _k) ->
+            do ! write_str "  bind ";
+            do ! write_str x;
+            do ! write_str ". ";
+            do ! print-scompu sc;
+            do ! write_line ",";
+            ! kont
+          end
+        }};
+        ! write_line "]" kont
+      ;
+      ! kont
+    end
   end
 end
 
@@ -704,7 +711,7 @@ def rec fn interp (env: U EnvO) : Interp =
               do ! print-scompu sc;
               do ! write_line "";
               do ! write_str "[stack]: ";
-              do ! print-trace items;
+              do ! traceo items .print();
               do ! write_str "Continue? ";
               do ! read_line; fn _ ->
               ! ka Unit()
