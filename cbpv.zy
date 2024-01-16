@@ -60,7 +60,7 @@ end
 
 codata Compu where
   | .app(): Value -> Compu
-  | .bind(): U (Value -> Compu) -> Compu
+  | .bind(): String -> SCompu -> U (Value -> Compu) -> Compu
   | .os(): MExnOS Value
 end
 
@@ -148,8 +148,8 @@ module MExnOS where
       comatch
       | .app() -> fn a -> // goal: Compu
         ! malg .bindA() @(A) m { fn v -> ! f v .app() a }
-      | .bind() -> fn k -> // goal: Compu
-        ! malg .bindA() @(A) m { fn v -> ! f v .bind() k }
+      | .bind() -> fn x sc k -> // goal: Compu
+        ! malg .bindA() @(A) m { fn v -> ! f v .bind() x sc k }
       | .os() -> // goal: MExnOS Value, use ordinary bind
         ! mexn .bind() @(A) @(Value) m { fn x -> ! f x .os() }
       end
@@ -161,7 +161,7 @@ module MExnOS where
     | .failA() -> fn e ->
       rec unwind -> comatch
       | .app() -> fn _ -> ! unwind
-      | .bind() -> fn _ -> ! unwind
+      | .bind() -> fn _ _ _ -> ! unwind
       | .os() -> ! mexn-err .fail() @(Value) e
       end
     end
@@ -214,7 +214,7 @@ module Print where
         do ! print-scbpv .compu() sc2;
         ! kont
       | Force(sv) ->
-        do ! write_str "call ";
+        do ! write_str "! ";
         do ! print-scbpv .value() sv;
         ! kont
       | If(sv, sc1, sc2) ->
@@ -226,9 +226,9 @@ module Print where
         do ! print-scbpv .compu() sc2;
         ! kont
       | Env(sc) ->
-        do ! write_str "env(";
+        do ! write_str "env[";
         do ! print-scbpv .compu() sc;
-        do ! write_str ")";
+        do ! write_str "]";
         ! kont
       end
     end
@@ -312,9 +312,9 @@ end
 module Trace where
   data TraceItem where
     | App(Value)
-    // | App(Value, SValue)
-    | Bind(U (Value -> Compu))
-    // | Bind(U (Value -> Compu), String, SCompu)
+    // | App(SValue, Value)
+    // | Bind(U (Value -> Compu))
+    | Bind(String, SCompu, U (Value -> Compu))
   end
 
   def fn print-trace (items: List TraceItem) (kont: U OS) : OS =
@@ -323,17 +323,17 @@ module Trace where
       do ! foldl @(TraceItem) @(U OS) items { fn item kont -> ret {
         match item
         | App(v) ->
-        // | App(v, _sv) ->
+        // | App(_sv, v) ->
           do ! write_str "  app ";
           do ! print-value v;
           do ! write_line ",";
           ! kont
-        | Bind(_k) ->
-        // | Bind(_k, x, sc) ->
+        // | Bind(_k) ->
+        | Bind(x, sc, _k) ->
           do ! write_str "  bind ";
-          // do ! write_str x;
-          // do ! write_str ". ";
-          // do ! print-scompu sc;
+          do ! write_str x;
+          do ! write_str ". ";
+          do ! print-scompu sc;
           do ! write_line ",";
           ! kont
         end
@@ -553,11 +553,11 @@ module Parser where
         ! mp .return() @(SCompu) Bind(sc1, v, sc2)
       in
       let fn _force =
-        do ! mp .bind() @(Char) @(SCompu) { ! p_char '(' }; fn _ ->
-        do ! mp .bind() @(String) @(SCompu) { ! p_word "call" }; fn _ ->
+        do ! mp .bind() @(Char) @(SCompu) { ! p_char '!' }; fn _ ->
+        // do ! mp .bind() @(String) @(SCompu) { ! p_word "call" }; fn _ ->
         do ! mp .bind() @(Char) @(SCompu) { ! p_char ' ' }; fn _ ->
         do ! mp .bind() @(SValue) @(SCompu) { ! p_cbpv .value() }; fn sv ->
-        do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
+        // do ! mp .bind() @(Char) @(SCompu) { ! p_char ')' }; fn _ ->
         ! mp .return() @(SCompu) Force(sv)
       in
       let fn _if =
@@ -651,7 +651,7 @@ def rec fn interp (env: U EnvO) : Interp =
       comatch
       | .app() -> fn v ->
         ! interp { ! env .extend() x v } .compu() sc
-      | .bind() -> fn k ->
+      | .bind() -> fn _ _ k ->
         do ! malg .bindA() @(Value) type-error; fn v ->
         // the following is unreachable
         ! k v .app() v
@@ -663,13 +663,13 @@ def rec fn interp (env: U EnvO) : Interp =
     | Ret(sv) ->
       comatch
       | .app() -> fn _ -> ! malg-err .failA() TypeError()
-      | .bind() -> fn k ->
+      | .bind() -> fn _ _ k ->
         do ! malg .bindA() @(Value) { ! interp env .value() sv }; fn v ->
         ! k v
       | .os() -> ! interp env .value() sv
       end
     | Bind(sc1, x, sc2) ->
-      do ! interp env .compu() sc1 .bind(); fn v ->
+      do ! interp env .compu() sc1 .bind() x sc2; fn v ->
       ! interp { ! env .extend() x v } .compu() sc2
     | Force(sv) ->
       do ! malg .bindA() @(Value) { ! interp env .value() sv }; fn v ->
@@ -692,8 +692,8 @@ def rec fn interp (env: U EnvO) : Interp =
         comatch
         | .app() -> fn v ->
           ! walk Cons(App(v), items)
-        | .bind() -> fn k ->
-          ! walk Cons(Bind(k), items)
+        | .bind() -> fn x sc k ->
+          ! walk Cons(Bind(x, sc, k), items)
         | .os() ->
           let mp: U (MExnOS Unit) = {
             comatch | .run() -> fn ka _ ->
@@ -717,7 +717,7 @@ def rec fn interp (env: U EnvO) : Interp =
             | Cons(item, items) ->
               match item
               | App(v) -> ! cowalk items .app() v
-              | Bind(k) -> ! cowalk items .bind() k
+              | Bind(x, sc, k) -> ! cowalk items .bind() x sc k
               end
             end
           in
@@ -770,5 +770,6 @@ main
   in
   do ! demo "(if true (ret true) (ret false))" Bool(True());
   do ! demo "(bind (env (ret true)) x (env ((env (fn b (if b (env (ret x)) (ret false)))) true)))" Bool(True());
+  do ! demo "(bind (ret {(fn x (if x (ret false) (ret true)))}) not (bind (env (ret false)) x (! not x)))" Bool(True());
   ! exit 0
 end
