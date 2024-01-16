@@ -60,7 +60,8 @@ end
 
 codata Compu where
   | .app(): Value -> Compu
-  | .bind(): MExnOS Value
+  | .bind(): U (Value -> Compu) -> Compu
+  | .os(): MExnOS Value
 end
 
 data SValue where
@@ -147,8 +148,10 @@ module MExnOS where
       comatch
       | .app() -> fn a -> // goal: Compu
         ! malg .bindA() @(A) m { fn v -> ! f v .app() a }
-      | .bind() -> // goal: MExnOS Value, use ordinary bind
-        ! mexn .bind() @(A) @(Value) m { fn x -> ! f x .bind() }
+      | .bind() -> fn k -> // goal: Compu
+        ! malg .bindA() @(A) m { fn v -> ! f v .bind() k }
+      | .os() -> // goal: MExnOS Value, use ordinary bind
+        ! mexn .bind() @(A) @(Value) m { fn x -> ! f x .os() }
       end
     end
   end
@@ -158,7 +161,8 @@ module MExnOS where
     | .failA() -> fn e ->
       rec unwind -> comatch
       | .app() -> fn _ -> ! unwind
-      | .bind() -> ! mexn-err .fail() @(Value) e
+      | .bind() -> fn _ -> ! unwind
+      | .os() -> ! mexn-err .fail() @(Value) e
       end
     end
   end
@@ -306,51 +310,38 @@ module Env where
 end
 
 module Trace where
-  // data TraceT where
-  //   | App(Value, TraceT)
-  //   | Bind(String, SCompu)
-  // end
+  data TraceItem where
+    | App(Value)
+    // | App(Value, SValue)
+    | Bind(U (Value -> Compu))
+    // | Bind(U (Value -> Compu), String, SCompu)
+  end
 
-  // codata TraceO where
-  // end
-
-  def fn print-trace (vs: List Value) (kont: U OS) : OS =
+  def fn print-trace (items: List TraceItem) (kont: U OS) : OS =
     do ! write_line "[";
     do kont <-
-      do ! foldl @(Value) @(U OS) vs { fn v kont -> ret {
-        do ! write_str "  app ";
-        do ! print-value v;
-        do ! write_line ",";
-        ! kont
+      do ! foldl @(TraceItem) @(U OS) items { fn item kont -> ret {
+        match item
+        | App(v) ->
+        // | App(v, _sv) ->
+          do ! write_str "  app ";
+          do ! print-value v;
+          do ! write_line ",";
+          ! kont
+        | Bind(_k) ->
+        // | Bind(_k, x, sc) ->
+          do ! write_str "  bind ";
+          // do ! write_str x;
+          // do ! write_str ". ";
+          // do ! print-scompu sc;
+          do ! write_line ",";
+          ! kont
+        end
       }};
       ! write_line "]" kont
     ;
     ! kont
   end
-
-  // def fn print-trace (trace: Trace) (kont: U OS) : OS =
-  //   let kont = { ! write_line "]" kont } in
-  //   do kont <- ! foldl @(TraceItem) @(U OS) trace { fn t kont ->
-  //     match t
-  //     | App(sv) -> ret {
-  //       do ! write_str "  app ";
-  //       do ! print-svalue sv;
-  //       do ! write_line ",";
-  //       ! kont
-  //     }
-  //     | Bind(x, sc) -> ret {
-  //       do ! write_str "  bind ";
-  //       do ! write_str x;
-  //       do ! write_str "; ";
-  //       do ! print-scompu sc;
-  //       do ! write_line ",";
-  //       ! kont
-  //     }
-  //     end
-  //   } kont;
-  //   let kont = { ! write_line "[" kont } in
-  //   ! kont
-  // end
 end
 
 /* Parser */
@@ -652,12 +643,19 @@ def rec fn interp (env: U EnvO) : Interp =
       ! mexn .return() @(Value) Thunk({ ! interp env .compu() c })
     end
   | .compu() -> fn sc ->
+    let fn type-error = 
+      ! mexn-err .fail() @(Value) TypeError()
+    in
     match sc
     | Lam(x, sc) ->
       comatch
       | .app() -> fn v ->
         ! interp { ! env .extend() x v } .compu() sc
-      | .bind() -> ! mexn-err .fail() @(Value) TypeError()
+      | .bind() -> fn k ->
+        do ! malg .bindA() @(Value) type-error; fn v ->
+        // the following is unreachable
+        ! k v .app() v
+      | .os() -> ! type-error
       end
     | App(sc, sv) ->
       do ! malg .bindA() @(Value) { ! interp env .value() sv }; fn v ->
@@ -665,10 +663,13 @@ def rec fn interp (env: U EnvO) : Interp =
     | Ret(sv) ->
       comatch
       | .app() -> fn _ -> ! malg-err .failA() TypeError()
-      | .bind() -> ! interp env .value() sv
+      | .bind() -> fn k ->
+        do ! malg .bindA() @(Value) { ! interp env .value() sv }; fn v ->
+        ! k v
+      | .os() -> ! interp env .value() sv
       end
     | Bind(sc1, x, sc2) ->
-      do ! malg .bindA() @(Value) { ! interp env .compu() sc1 .bind() }; fn v ->
+      do ! interp env .compu() sc1 .bind(); fn v ->
       ! interp { ! env .extend() x v } .compu() sc2
     | Force(sv) ->
       do ! malg .bindA() @(Value) { ! interp env .value() sv }; fn v ->
@@ -686,32 +687,38 @@ def rec fn interp (env: U EnvO) : Interp =
         end
       | Thunk(_) -> ! malg-err .failA() TypeError()
       end
-    | Env(sc) ->
-      let rec fn walk (vs: List Value): Compu =
+    | Env(sc) -> 
+      let rec fn walk (items: List TraceItem): Compu =
         comatch
         | .app() -> fn v ->
-          ! walk Cons(v, vs)
-        | .bind() ->
+          ! walk Cons(App(v), items)
+        | .bind() -> fn k ->
+          ! walk Cons(Bind(k), items)
+        | .os() ->
           let mp: U (MExnOS Unit) = {
             comatch | .run() -> fn ka _ ->
               do ! write_line "[[DEBUG]]";
               do ! write_str "[env]: ";
               do ! env .print();
               do ! write_str "[app-stack]: ";
-              do ! print-trace vs;
+              do ! print-trace items;
               do ! write_str "Continue? ";
               do ! read_line; fn _ ->
               ! ka Unit()
             end
           } in
           do ! mexn .bind() @(Unit) @(Value) mp; fn _ ->
-          let rec fn cowalk (vs: List Value): Compu =
-            match vs
+          let rec fn cowalk (items: List TraceItem): Compu =
+            match items
             | Nil() -> ! interp env .compu() sc
-            | Cons(v, vs) -> ! cowalk vs .app() v
+            | Cons(item, items) ->
+              match item
+              | App(v) -> ! cowalk items .app() v
+              | Bind(k) -> ! cowalk items .bind() k
+              end
             end
           in
-          ! cowalk vs .bind()
+          ! cowalk items .os()
         end
       in
       ! walk Nil()
@@ -753,7 +760,7 @@ main
   let env : U EnvO = { ! envo Empty() } in
   let fn demo (src: String) (ans: Value) (k: U OS): OS =
     ! mexn .bind() @(SCompu) @(Value) { ! p_main src } { fn term ->
-      ! interp env .compu() term .bind()
+      ! interp env .compu() term .os()
     } .run() { fn v ->
       ! value-eq v ans k
     } report
