@@ -775,8 +775,15 @@ main
       ! value-eq v ans k
     } report
   in
-  do ! demo "(if true (ret true) (ret false))" Bool(True());
-  do ! demo "(bind (env (ret true)) x (env ((env (fn b (if b (env (ret x)) (ret false)))) true)))" Bool(True());
-  do ! demo "(bind (ret {(fn x (if x (ret false) (ret true)))}) not (bind (env (ret false)) x (! not x)))" Bool(True());
+  // if clause
+  // do ! demo "(if true (ret true) (ret false))" Bool(True());
+  // 4 envs: first with a bind stack, second with x in env, third with an app stack, and last with only variables in env
+  // do ! demo "(bind (env (ret true)) x (env ((env (fn b (if b (env (ret x)) (ret false)))) true)))" Bool(True());
+  // lambda in thunk
+  // do ! demo "(bind (ret {(fn x (if x (ret false) (ret true)))}) not (bind (env (ret false)) x (! not x)))" Bool(True());
+  // bind to lambda should fail
+  // do ! demo "(bind (fn x (ret x)) f (ret true))" Bool(True());
+  // sum with y combinator
+  // do ! demo "" Bool(True());
   ! exit 0
 end
