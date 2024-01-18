@@ -55,6 +55,7 @@ end
 
 data Value where
   | Bool(Bool)
+  | Int(Int)
   | Thunk(U Compu)
 end
 
@@ -67,6 +68,7 @@ end
 data SValue where
   | Var(String)
   | Bool(Bool)
+  | Int(Int)
   | Thunk(SCompu)
 end
 
@@ -76,7 +78,10 @@ data SCompu where
   | Ret(SValue)
   | Bind(SCompu, String, SCompu)
   | Force(SValue)
+  | Rec(String, SCompu)
   | If(SValue, SCompu, SCompu)
+  // | Add(SValue, SValue)
+  // | Mul(SValue, SValue)
   | Env(SCompu)
 end
 
@@ -179,6 +184,9 @@ module Print where
       match sv
       | Var(x) -> ! write_str x kont
       | Bool(b) -> ! if @(OS) b { ! write_str "true" kont } { ! write_str "false" kont }
+      | Int(i) ->
+        do i <- ! int_to_str i;
+        ! write_str i kont
       | Thunk(sc) ->
         // Note: `do <comp1>; <comp2>` is a syntactic sugar for `<comp1> { <comp2> }`
         do ! write_str "{ ";
@@ -217,6 +225,12 @@ module Print where
         do ! write_str "! ";
         do ! print-scbpv .value() sv;
         ! kont
+      | Rec(x, sc) ->
+        do ! write_str "rec ";
+        do ! write_str x;
+        do ! write_str " -> ";
+        do ! print-scbpv .compu() sc;
+        ! kont
       | If(sv, sc1, sc2) ->
         do ! write_str "if ";
         do ! print-scbpv .value() sv;
@@ -249,6 +263,9 @@ module Print where
     | .value() -> fn v kont ->
       match v
       | Bool(b) -> ! if @(OS) b { ! write_str "true" kont } { ! write_str "false" kont }
+      | Int(i) ->
+        do i <- ! int_to_str i;
+        ! write_str i kont
       | Thunk(c) ->
         do ! write_str "{ ";
         do ! print-cbpv .compu() c;
@@ -646,6 +663,8 @@ def rec fn interp (env: U EnvO) : Interp =
       end
     | Bool(b) ->
       ! mexn .return() @(Value) Bool(b)
+    | Int(i) ->
+      ! mexn .return() @(Value) Int(i)
     | Thunk(c) ->
       ! mexn .return() @(Value) Thunk({ ! interp env .compu() c })
     end
@@ -682,8 +701,11 @@ def rec fn interp (env: U EnvO) : Interp =
       do ! malg .bindA() @(Value) { ! interp env .value() sv }; fn v ->
       match v
       | Bool(_) -> ! malg-err .failA() TypeError()
+      | Int(_) -> ! malg-err .failA() TypeError()
       | Thunk(c) -> ! c
       end
+    | Rec(x, sc) ->
+      ! interp { ! env .extend() x Thunk({ ! interp env .compu() Rec(x, sc) }) } .compu() sc
     | If(sv, c1, c2) ->
       do ! malg .bindA() @(Value) { ! interp env .value() sv }; fn v ->
       match v
@@ -692,6 +714,7 @@ def rec fn interp (env: U EnvO) : Interp =
         | True() -> ! interp env .compu() c1
         | False() -> ! interp env .compu() c2
         end
+      | Int(_) -> ! malg-err .failA() TypeError()
       | Thunk(_) -> ! malg-err .failA() TypeError()
       end
     | Env(sc) -> 
@@ -737,20 +760,45 @@ def rec fn interp (env: U EnvO) : Interp =
 end
 
 def fn value-eq (v1: Value) (v2: Value) (k: U OS) : OS =
-  let bool-value-panic = { ! panic "wrong bool value" } in
-  let thunk-panic = { ! panic "thunks are not comparable" } in
+  let expect-bool-panic = { ! panic "expected bool value" } in
+  let expect-int-panic = { ! panic "expected int value" } in
+  let correct = { ! write_line "\\^o^/" k } in
   match v1
   | Bool(b1) ->
     match v2
     | Bool(b2) ->
       do eq? <- ! bool_eq b1 b2;
       match eq?
-      | True() -> ! write_line "\\^o^/" k
-      | False() -> ! bool-value-panic
+      | True() -> ! correct
+      | False() ->
+        do b1 <- ! bool_to_str b1;
+        do b2 <- ! bool_to_str b2;
+        do msg <- ! str_append b1 " != ";
+        do msg <- ! str_append msg b2;
+        do msg <- ! str_append "wrong bool value: " msg;
+        ! panic msg
       end
-    | Thunk(_) -> ! thunk-panic
+    | Int(_) -> ! expect-bool-panic
+    | Thunk(_) -> ! expect-bool-panic
     end
-  | Thunk(_) -> ! thunk-panic
+  | Int(i1) ->
+    match v2
+    | Bool(_) -> ! expect-int-panic
+    | Int(i2) ->
+      do eq? <- ! int_eq i1 i2;
+      match eq?
+      | True() -> ! correct
+      | False() ->
+        do i1 <- ! int_to_str i1;
+        do i2 <- ! int_to_str i2;
+        do msg <- ! str_append i1 " != ";
+        do msg <- ! str_append msg i2;
+        do msg <- ! str_append "wrong int value: " msg;
+        ! panic msg
+      end
+    | Thunk(_) -> ! expect-int-panic
+    end
+  | Thunk(_) -> ! panic "thunks are not comparable"
   end
 end
 
@@ -766,24 +814,78 @@ def fn report (e: Exception) : OS =
   end
 end
 
-main
-  let env : U EnvO = { ! envo Empty() } in
-  let fn demo (src: String) (ans: Value) (k: U OS): OS =
-    ! mexn .bind() @(SCompu) @(Value) { ! p_main src } { fn term ->
-      ! interp env .compu() term .os()
-    } .run() { fn v ->
-      ! value-eq v ans k
-    } report
+def fn nil-env : EnvO =
+  ! envo Empty()
+end
+
+def fn cbpv-env : EnvO =
+  let fn app-int (f: U (Int -> Compu)) : Compu =
+    comatch
+    | .app() -> fn v ->
+      match v
+      | Bool(_) -> ! malg-err .failA() TypeError()
+      | Thunk(_) -> ! malg-err .failA() TypeError()
+      | Int(i) -> ! f i
+      end
+    | .bind() -> fn _ _ _ ->
+      ! malg-err .failA() TypeError()
+    | .os() ->
+      ! mexn-err .fail() @(Value) TypeError()
+    end
   in
+  let fn int-op (op: U (Int -> Int -> Ret Int)) : Compu =
+    do ! app-int; fn i1 ->
+    do ! app-int; fn i2 ->
+    do i <- ! op i1 i2;
+    comatch
+    | .app() -> fn _ -> ! malg-err .failA() TypeError()
+    | .bind() -> fn _ _ k ->
+      do ! malg .bindA() @(Value) { ! mexn .return() @(Value) Int(i) }; fn v ->
+      ! k v
+    | .os() -> ! mexn .return() @(Value) Int(i)
+    end
+  in
+  ! envo Extend("add", Thunk({
+    ! int-op add
+  }), Extend("mul", Thunk({
+    ! int-op mul
+  }), Empty()))
+end
+
+def fn demo-scompu (env: U EnvO) (term: SCompu) (ans: Value) (k: U OS): OS =
+  ! interp env .compu() term .os() .run() { fn v ->
+    ! value-eq v ans k
+  } report
+end
+
+def fn demo (env: U EnvO) (src: String) (ans: Value) (k: U OS): OS =
+  ! p_main src .run() { fn term ->
+    ! demo-scompu env term ans k
+  } report
+end
+
+main
   // if clause
-  // do ! demo "(if true (ret true) (ret false))" Bool(True());
+  // do ! demo nil-env "(if true (ret true) (ret false))" Bool(True());
   // 4 envs: first with a bind stack, second with x in env, third with an app stack, and last with only variables in env
-  // do ! demo "(bind (env (ret true)) x (env ((env (fn b (if b (env (ret x)) (ret false)))) true)))" Bool(True());
+  // do ! demo nil-env "(bind (env (ret true)) x (env ((env (fn b (if b (env (ret x)) (ret false)))) true)))" Bool(True());
   // lambda in thunk
-  // do ! demo "(bind (ret {(fn x (if x (ret false) (ret true)))}) not (bind (env (ret false)) x (! not x)))" Bool(True());
+  // do ! demo nil-env "(bind (ret {(fn x (if x (ret false) (ret true)))}) not (bind (env (ret false)) x (! not x)))" Bool(True());
   // bind to lambda should fail
-  // do ! demo "(bind (fn x (ret x)) f (ret true))" Bool(True());
-  // sum with y combinator
-  // do ! demo "" Bool(True());
+  // do ! demo nil-env "(bind (fn x (ret x)) f (ret true))" Bool(True());
+  // test `! add 1 2`
+  // do ! demo-scompu cbpv-env App(App(Force(Var("add")), Int(1)), Int(2)) Int(3);
+  // test `! mul 3 2`
+  // do ! demo-scompu cbpv-env App(App(Force(Var("mul")), Int(3)), Int(2)) Int(6);
+  // test infinite loop
+  // do ! demo-scompu cbpv-env Rec("loop", Force(Var("loop"))) Int(1);
+  // test `do x <- ! add 2 3; ! add 1 x`
+  // do ! demo-scompu cbpv-env Bind(
+  //   App(App(Force(Var("add")), Int(2)), Int(3)),
+  //   "x",
+  //   App(App(Force(Var("add")), Int(1)), Var("x"))
+  // ) Int(6);
+  // factorial with y combinator
+  // do ! demo-scompu cbpv-env App(Rec("f", ), Int(10)) Bool(True());
   ! exit 0
 end
