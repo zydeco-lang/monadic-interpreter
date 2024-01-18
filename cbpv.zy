@@ -833,23 +833,31 @@ def fn cbpv-env : EnvO =
       ! mexn-err .fail() @(Value) TypeError()
     end
   in
-  let fn int-op (op: U (Int -> Int -> Ret Int)) : Compu =
+  let fn int-op (op: U (Int -> Int -> Ret Value)) : Compu =
     do ! app-int; fn i1 ->
     do ! app-int; fn i2 ->
-    do i <- ! op i1 i2;
+    do v <- ! op i1 i2;
     comatch
     | .app() -> fn _ -> ! malg-err .failA() TypeError()
     | .bind() -> fn _ _ k ->
-      do ! malg .bindA() @(Value) { ! mexn .return() @(Value) Int(i) }; fn v ->
+      do ! malg .bindA() @(Value) { ! mexn .return() @(Value) v }; fn v ->
       ! k v
-    | .os() -> ! mexn .return() @(Value) Int(i)
+    | .os() -> ! mexn .return() @(Value) v
     end
   in
   ! envo Extend("add", Thunk({
-    ! int-op add
+    do ! int-op; fn i1 i2 ->
+    do i <- ! add i1 i2;
+    ret Int(i)
   }), Extend("mul", Thunk({
-    ! int-op mul
-  }), Empty()))
+    do ! int-op; fn i1 i2 ->
+    do i <- ! mul i1 i2;
+    ret Int(i)
+  }), Extend("eq", Thunk({
+    do ! int-op; fn i1 i2 ->
+    do b <- ! int_eq i1 i2;
+    ret Bool(b)
+  }), Empty())))
 end
 
 def fn demo-scompu (env: U EnvO) (term: SCompu) (ans: Value) (k: U OS): OS =
@@ -867,25 +875,64 @@ end
 main
   // if clause
   // do ! demo nil-env "(if true (ret true) (ret false))" Bool(True());
+
   // 4 envs: first with a bind stack, second with x in env, third with an app stack, and last with only variables in env
   // do ! demo nil-env "(bind (env (ret true)) x (env ((env (fn b (if b (env (ret x)) (ret false)))) true)))" Bool(True());
+
   // lambda in thunk
   // do ! demo nil-env "(bind (ret {(fn x (if x (ret false) (ret true)))}) not (bind (env (ret false)) x (! not x)))" Bool(True());
+
   // bind to lambda should fail
   // do ! demo nil-env "(bind (fn x (ret x)) f (ret true))" Bool(True());
+
   // test `! add 1 2`
   // do ! demo-scompu cbpv-env App(App(Force(Var("add")), Int(1)), Int(2)) Int(3);
+
   // test `! mul 3 2`
   // do ! demo-scompu cbpv-env App(App(Force(Var("mul")), Int(3)), Int(2)) Int(6);
+
   // test infinite loop
   // do ! demo-scompu cbpv-env Rec("loop", Force(Var("loop"))) Int(1);
+
   // test `do x <- ! add 2 3; ! add 1 x`
   // do ! demo-scompu cbpv-env Bind(
   //   App(App(Force(Var("add")), Int(2)), Int(3)),
   //   "x",
   //   App(App(Force(Var("add")), Int(1)), Var("x"))
   // ) Int(6);
-  // factorial with y combinator
-  // do ! demo-scompu cbpv-env App(Rec("f", ), Int(10)) Bool(True());
+
+  // factorial, poor usage of stack
+  // do ! demo-scompu cbpv-env App(Rec("fact", Env(Lam("x",
+  //   Bind(
+  //     App(App(Force(Var("eq")), Var("x")), Int(0)),
+  //     "b",
+  //     If(Var("b"), Ret(Int(1)), Bind(
+  //       App(App(Force(Var("add")), Var("x")), Int(-1)),
+  //       "y",
+  //       Bind(
+  //         App(Force(Var("fact")), Var("y")),
+  //         "z",
+  //         App(App(Force(Var("mul")), Var("x")), Var("z"))
+  //       )
+  //     ))
+  //   )
+  // ))), Int(6)) Int(720);
+
+  // factorial, tail call
+  // do ! demo-scompu cbpv-env App(App(Rec("fact", Env(Lam("acc", Lam("x",
+  //   Bind(
+  //     App(App(Force(Var("eq")), Var("x")), Int(0)),
+  //     "b",
+  //     If(Var("b"), Ret(Var("acc")), Bind(
+  //       App(App(Force(Var("add")), Var("x")), Int(-1)),
+  //       "y",
+  //       Bind(
+  //         App(App(Force(Var("mul")), Var("x")), Var("acc")),
+  //         "acc",
+  //         App(App(Force(Var("fact")), Var("acc")), Var("y")),
+  //       )
+  //     ))
+  //   )
+  // )))), Int(1)), Int(6)) Int(720);
   ! exit 0
 end
