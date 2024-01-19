@@ -759,58 +759,60 @@ def rec fn interp (env: U EnvO) : Interp =
   end
 end
 
-def fn value-eq (v1: Value) (v2: Value) (k: U OS) : OS =
-  let expect-bool-panic = { ! panic "expected bool value" } in
-  let expect-int-panic = { ! panic "expected int value" } in
-  let correct = { ! write_line "\\^o^/" k } in
-  match v1
-  | Bool(b1) ->
-    match v2
-    | Bool(b2) ->
-      do eq? <- ! bool_eq b1 b2;
-      match eq?
-      | True() -> ! correct
-      | False() ->
-        do b1 <- ! bool_to_str b1;
-        do b2 <- ! bool_to_str b2;
-        do msg <- ! str_append b1 " != ";
-        do msg <- ! str_append msg b2;
-        do msg <- ! str_append "wrong bool value: " msg;
-        ! panic msg
+module Utils where
+  def fn value-eq (v1: Value) (v2: Value) (k: U OS) : OS =
+    let expect-bool-panic = { ! panic "expected bool value" } in
+    let expect-int-panic = { ! panic "expected int value" } in
+    let correct = { ! write_line "\\^o^/" k } in
+    match v1
+    | Bool(b1) ->
+      match v2
+      | Bool(b2) ->
+        do eq? <- ! bool_eq b1 b2;
+        match eq?
+        | True() -> ! correct
+        | False() ->
+          do b1 <- ! bool_to_str b1;
+          do b2 <- ! bool_to_str b2;
+          do msg <- ! str_append b1 " != ";
+          do msg <- ! str_append msg b2;
+          do msg <- ! str_append "wrong bool value: " msg;
+          ! panic msg
+        end
+      | Int(_) -> ! expect-bool-panic
+      | Thunk(_) -> ! expect-bool-panic
       end
-    | Int(_) -> ! expect-bool-panic
-    | Thunk(_) -> ! expect-bool-panic
-    end
-  | Int(i1) ->
-    match v2
-    | Bool(_) -> ! expect-int-panic
-    | Int(i2) ->
-      do eq? <- ! int_eq i1 i2;
-      match eq?
-      | True() -> ! correct
-      | False() ->
-        do i1 <- ! int_to_str i1;
-        do i2 <- ! int_to_str i2;
-        do msg <- ! str_append i1 " != ";
-        do msg <- ! str_append msg i2;
-        do msg <- ! str_append "wrong int value: " msg;
-        ! panic msg
+    | Int(i1) ->
+      match v2
+      | Bool(_) -> ! expect-int-panic
+      | Int(i2) ->
+        do eq? <- ! int_eq i1 i2;
+        match eq?
+        | True() -> ! correct
+        | False() ->
+          do i1 <- ! int_to_str i1;
+          do i2 <- ! int_to_str i2;
+          do msg <- ! str_append i1 " != ";
+          do msg <- ! str_append msg i2;
+          do msg <- ! str_append "wrong int value: " msg;
+          ! panic msg
+        end
+      | Thunk(_) -> ! expect-int-panic
       end
-    | Thunk(_) -> ! expect-int-panic
+    | Thunk(_) -> ! panic "thunks are not comparable"
     end
-  | Thunk(_) -> ! panic "thunks are not comparable"
   end
-end
 
-def fn report (e: Exception) : OS =
-  match e
-  | ParseError(loc, msg) ->
-    do loc <- ! int_to_str loc;
-    do loc <- ! str_append loc ": ";
-    do msg <- ! str_append loc msg;
-    ! panic msg
-  | FreeVariable() -> ! panic "free variable"
-  | TypeError() -> ! panic "type error"
+  def fn report (e: Exception) : OS =
+    match e
+    | ParseError(loc, msg) ->
+      do loc <- ! int_to_str loc;
+      do loc <- ! str_append loc ": ";
+      do msg <- ! str_append loc msg;
+      ! panic msg
+    | FreeVariable() -> ! panic "free variable"
+    | TypeError() -> ! panic "type error"
+    end
   end
 end
 
@@ -884,6 +886,12 @@ main
 
   // bind to lambda should fail
   // do ! demo nil-env "(bind (fn x (ret x)) f (ret true))" Bool(True());
+
+  // apply to ret should fail
+  // do ! demo nil-env "((ret true) true)" Bool(True());
+
+  // call a bool should fail
+  // do ! demo nil-env "! true" Bool(True());
 
   // test `! add 1 2`
   // do ! demo-scompu cbpv-env App(App(Force(Var("add")), Int(1)), Int(2)) Int(3);
