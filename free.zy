@@ -1,42 +1,42 @@
 // A functor structure
 codata Functor (FF: VType -> CType) where
-  | .map(): forall (A: VType) (A': VType) . U (A -> Ret A') -> U (FF A) -> FF A'
+  | .map : forall (A: VType) (A': VType) . U (A -> Ret A') -> U (FF A) -> FF A'
 end
 
 // A monad structure
 codata Monad (M: VType -> CType) where
-  | .return(): forall (A: VType) . A -> M A
-  | .bind(): forall (A: VType) (A': VType) . U (M A) -> U (A -> M A') -> M A'
+  | .return : forall (A: VType) . A -> M A
+  | .bind : forall (A: VType) (A': VType) . U (M A) -> U (A -> M A') -> M A'
 end
 
 /* The tree-shaped free monad */
 module TreeFreeMonad where
-  // data FreeM (FF: VType -> CType) (A: VType) where
-  //   | Pure(A)
-  //   | Bind(Thunk (FF (FreeM FF A)))
-  // end
+  data FreeM (FF: VType -> CType) (A: VType) where
+    | Pure(A)
+    | Bind(Thunk (FF (FreeM FF A)))
+  end
 
-  // // Making CBPV happy about the kind
-  // codata Free (FF: VType -> CType) (A: VType) where
-  //   | .run(): Ret (FreeM FF A)
-  // end
+  // Making CBPV happy about the kind
+  codata Free (FF: VType -> CType) (A: VType) where
+    | .run : Ret (FreeM FF A)
+  end
 
-  // def rec fn freeM (FF: VType -> CType) (func: U (Functor FF)): Monad (Free FF) =
-  //   comatch
-  //   | .return() -> fn A a -> fn .run() -> ret Pure(a)
-  //   | .bind() -> fn A A' (m: Thunk (Free FF A)) (f: Thunk (A -> Free FF A')) ->
-  //     do fm <- ! m .run(); // FreeM FF A
-  //     match fm
-  //     | Pure(a) -> ! f a
-  //     | Bind(ffm) -> fn .run() -> ret Bind({
-  //       // goal: FF (FreeM FF A')
-  //       ! func .map() @(FreeM FF A) @(FreeM FF A') { fn fm ->
-  //         ! freeM @(FF) func .bind() @(A) @(A') { fn .run() -> ret fm } f .run()
-  //       } ffm
-  //     })
-  //     end
-  //   end
-  // end
+  def rec fn freeM (FF: VType -> CType) (func: U (Functor FF)): Monad (Free FF) =
+    comatch
+    | .return A a -> fn .run -> ret Pure(a)
+    | .bind A A' (m: Thunk (Free FF A)) (f: Thunk (A -> Free FF A')) ->
+      do fm <- ! m .run; // FreeM FF A
+      match fm
+      | Pure(a) -> ! f a
+      | Bind(ffm) -> fn .run -> ret Bind({
+        // goal: FF (FreeM FF A')
+        ! func .map @(FreeM FF A) @(FreeM FF A') { fn fm ->
+          ! freeM @(FF) func .bind @(A) @(A') { fn .run -> ret fm } f .run
+        } ffm
+      })
+      end
+    end
+  end
 end
 
 main
