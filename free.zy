@@ -12,8 +12,8 @@ end
 /* The tree-shaped free monad */
 module TreeFreeMonad where
   data FreeM (FF: VType -> CType) (A: VType) where
-    | Pure(A)
-    | Bind(Thunk (FF (FreeM FF A)))
+    | +Pure(A)
+    | +Bind(Thunk (FF (FreeM FF A)))
   end
 
   // Making CBPV happy about the kind
@@ -23,12 +23,12 @@ module TreeFreeMonad where
 
   def rec fn freeM (FF: VType -> CType) (func: U (Functor FF)): Monad (Free FF) =
     comatch
-    | .return A a -> fn .run -> ret Pure(a)
+    | .return A a -> fn .run -> ret +Pure(a)
     | .bind A A' (m: Thunk (Free FF A)) (f: Thunk (A -> Free FF A')) ->
       do fm <- ! m .run; // FreeM FF A
       match fm
-      | Pure(a) -> ! f a
-      | Bind(ffm) -> fn .run -> ret Bind({
+      | +Pure(a) -> ! f a
+      | +Bind(ffm) -> fn .run -> ret +Bind({
         // goal: FF (FreeM FF A')
         ! func .map @(FreeM FF A) @(FreeM FF A') { fn fm ->
           ! freeM @(FF) func .bind @(A) @(A') { fn .run -> ret fm } f .run
